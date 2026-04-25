@@ -18,7 +18,8 @@
   "scripts": {
     "dev": "GLYPHLING_HOME=./.dev-state/dev tsx src/cli.tsx",
     "demo": "GLYPHLING_HOME=./.dev-state/demo tsx src/cli.tsx",
-    "test": "GLYPHLING_HOME=./.dev-state/test vitest",
+    "test": "GLYPHLING_HOME=./.dev-state/test vitest run",
+    "test:watch": "GLYPHLING_HOME=./.dev-state/test vitest",
     "build": "tsc -p tsconfig.build.json && chmod +x dist/src/bin.js",
     "typecheck": "tsc --noEmit",
     "demo:lint": "bash scripts/check-tapes.sh",
