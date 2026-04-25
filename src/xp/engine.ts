@@ -4,100 +4,93 @@
  * Pure reducer: no I/O, no timers, no side effects beyond the return value.
  *
  * Implements:
- *   - xpToNext(L)        — DEC-004 curve: floor(25 * L^1.20), cap at LEVEL_CAP
+ *   - xpToNext(L)        — DEC-020 golden curve: floor(2 * L^φ), cap at LEVEL_CAP
  *   - levelFromCumXp(x)  — inverse: highest L s.t. Σ_{k=1..L-1} xpToNext(k) ≤ x
- *   - displayLevel(L)    — "1024 · Ascendant" at cap, plain number otherwise
+ *   - displayLevel(L)    — "1618 · Ascendant" at cap, plain number otherwise
  *   - applyEvent(e, pet) — fold one GlyphlingEvent onto a Pet; returns {pet, sideEffects}
  *   - XP_PER_SIGNAL      — preliminary per-signal XP values (see §6.3 table)
  *
+ * GOLDEN XP CURVE (DEC-020)
+ * ─────────────────────────
+ *   xpToNext(L) = floor(2 * L^φ)   where φ = (1 + √5) / 2 ≈ 1.6180339887498949
+ *   LEVEL_CAP   = 1618              (the Golden Level = ⌊φ × 1000⌋)
+ *
+ * The exponent is φ itself — a structurally golden curve.
+ * At L=1618, xpToNext returns 0 (Ascendant). XP keeps accumulating past cap (vanity).
+ *
  * PRELIMINARY XP VALUES (TODO-006)
  * ─────────────────────────────────
- * These numbers were chosen to hit the DEC-004 budget estimate of ~2,000 XP/day
- * for a "heavy use" developer. They have NOT been validated through Phase 1 testing
- * and must be calibrated before public release (architecture §13, risk #4).
+ * These numbers were chosen to hit a ~2,000 XP/day budget for a "heavy use"
+ * developer. They have NOT been validated through Phase 1 testing and must be
+ * calibrated before public release (architecture §13, risk #4).
  *
- *   tokens.delta  : floor(tokens / 500) — 1 XP per 500 tokens
+ *   tokens.delta  : floor(tokens / 1000) — 1 XP per 1000 tokens  (DEC-020: 1/500 → 1/1000)
  *                   (§6.3: emit when ≥5000 tokens OR 60s elapsed with any tokens)
  *   git.commit    : 25 XP flat per commit
  *   test.pass     : 5 XP per new passing test, capped at 50 XP/run
- *   file.edit     : 1 XP per edited file-minute, capped at 100 XP/day
+ *   file.edit     : 1 XP per edited file-minute
  *   error.fixed   : 15 XP flat
  *   daily.checkin : 20 XP base + streak bonus (+10% per consecutive day, cap ×2.0)
  *   pet.fed/played: 5 XP flat
  *
- * Rough daily budget at heavy use (~8h of coding):
- *   tokens: ~100k tokens → 200 XP
- *   commits: ~8 commits → 200 XP
- *   tests: ~20 test runs, 50 XP cap each → up to 1000 XP (dedupe will limit this)
- *   edits: ~100 file-minute events → 100 XP (at daily cap)
- *   checkin: 20 XP
- *   fed/played: ~30 XP
- *   ≈ 1550–2000 XP/day — consistent with DEC-004's "heavy use" estimate.
+ * DEC-020: NO DAILY CAPS
+ * ─────────────────────
+ * Daily per-signal XP caps are removed. Rate-limits and cursor-based dedupe
+ * (DEC-018 Mechanisms 1-4) remain in effect to prevent pathological throughput.
  *
- * DEC-018 DAILY CAPS
- * ──────────────────
- * Per-signal caps enforced per UTC day (YYYY-MM-DD key in pet.dailyCaps).
- * Excess is partially granted (up to the cap) and the remainder logged as
- * signal.rejected { reason: "cap.daily" }. Stale days pruned on each tick
- * (retain last 7 days).
- *
- *   tokens  : 6000 XP/day
- *   tests   : 200  XP/day
- *   commits : 500  XP/day
- *   edits   : 100  XP/day
- *
- * @see DEC-004 (XP curve + 1024 cap)
- * @see DEC-018 (integrity model + daily caps)
+ * @see DEC-004 (XP curve history)
+ * @see DEC-018 (integrity model; Mechanism 3 daily caps removed per DEC-020)
+ * @see DEC-020 (golden curve + cap bump to 1618)
  * @see architecture §6.3 (per-signal rate limits and dedupe)
  * @see architecture §6.4 (XP fold algorithm)
  */
 
 import { ulid } from "ulid";
-import type { Pet, StateFileV1, DailyCaps, SignalType } from "../state/schema.js";
+import type { Pet, StateFileV1 } from "../state/schema.js";
 import type { GlyphlingEvent } from "../events/bus.js";
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
-/** The sacred level cap (DEC-004). Never soften, never round. */
-export const LEVEL_CAP = 1024 as const;
+/**
+ * The golden ratio φ = (1 + √5) / 2.
+ * Used as the exponent in the DEC-020 XP curve: xpToNext(L) = floor(2 * L^φ).
+ */
+export const PHI = (1 + Math.sqrt(5)) / 2;
 
-/** Honorific appended to the display name at LEVEL_CAP (DEC-004). */
+/** The sacred level cap — the Golden Level (DEC-020). Never soften, never round. */
+export const LEVEL_CAP = 1618 as const;
+
+/** Honorific appended to the display name at LEVEL_CAP (DEC-004/DEC-020). */
 export const ASCENDANT_HONORIFIC = "Ascendant" as const;
 
 // ---------------------------------------------------------------------------
-// DEC-018: Daily XP caps
+// Token XP denominator (DEC-020)
 // ---------------------------------------------------------------------------
 
-/** Daily XP cap for tokens.delta events (DEC-018). */
-export const DAILY_CAP_TOKENS = 6000;
-
-/** Daily XP cap for test.pass events (DEC-018). */
-export const DAILY_CAP_TESTS = 200;
-
-/** Daily XP cap for git.commit events (DEC-018). */
-export const DAILY_CAP_COMMITS = 500;
-
-/** Daily XP cap for file.edit events (DEC-018). */
-export const DAILY_CAP_EDITS = 100;
-
-/** How many days of cap data to retain in pet.dailyCaps (DEC-018). */
-export const DAILY_CAPS_RETENTION_DAYS = 7;
+/**
+ * Number of tokens per 1 XP in tokens.delta events (DEC-020: 1 XP per 1000 tokens).
+ * Single constant so future tuning is a one-line change.
+ */
+export const XP_PER_TOKEN_DENOMINATOR = 1000;
 
 // ---------------------------------------------------------------------------
-// XP curve (DEC-004)
+// XP curve (DEC-020)
 // ---------------------------------------------------------------------------
 
 /**
  * XP required to advance from level L to level L+1.
  *
- * Formula: floor(25 * L^1.20) per DEC-004 (exponent amended 2026-04-17).
+ * Formula: floor(2 * L^φ) per DEC-020.
  * At L >= LEVEL_CAP: returns 0 (pet is Ascendant; callers should gate on level).
+ *
+ * Computability constraint: result is exact in IEEE-754 double for L ≤ 1619
+ * and the Math.floor maps cleanly to a non-negative 32-bit integer.
  */
 export function xpToNext(L: number): number {
   if (L >= LEVEL_CAP) return 0;
-  return Math.floor(25 * Math.pow(L, 1.20));
+  return Math.floor(2 * Math.pow(L, PHI));
 }
 
 // ---------------------------------------------------------------------------
@@ -148,7 +141,7 @@ export function cumulativeXpForLevel(L: number): number {
  * Derive the highest level L (in [1, LEVEL_CAP]) for which
  * cumulativeXpForLevel(L) <= cumXp.
  *
- * Uses binary search on the precomputed table. Monotonic; saturates at 1024.
+ * Uses binary search on the precomputed table. Monotonic; saturates at 1618.
  */
 export function levelFromCumXp(cumXp: number): number {
   if (cumXp < 0) return 1;
@@ -173,11 +166,11 @@ export function levelFromCumXp(cumXp: number): number {
 
 /**
  * Returns the level string for display in HUD / status line.
- * At LEVEL_CAP, appends the "Ascendant" honorific (DEC-004).
+ * At LEVEL_CAP, appends the "Ascendant" honorific (DEC-004/DEC-020).
  *
  * HUD variants per docs/design/compact-frames.md §4 (variant 3 — Ascendant):
  *   Normal:    "42"
- *   Ascendant: "1024 · Ascendant"
+ *   Ascendant: "1618 · Ascendant"
  */
 export function displayLevel(L: number): string {
   if (L >= LEVEL_CAP) return `${LEVEL_CAP} · ${ASCENDANT_HONORIFIC}`;
@@ -188,15 +181,12 @@ export function displayLevel(L: number): string {
 // Per-signal XP values (PRELIMINARY — see file-level comment)
 // ---------------------------------------------------------------------------
 
-/** XP awarded per 500 tokens in a tokens.delta event. */
-export const XP_PER_500_TOKENS = 1;
-
 /**
  * Compute the XP delta for a tokens.delta event payload.
  * @param tokens Total token count in the delta.
  */
 export function xpForTokens(tokens: number): number {
-  return Math.floor(tokens / 500) * XP_PER_500_TOKENS;
+  return Math.floor(tokens / XP_PER_TOKEN_DENOMINATOR);
 }
 
 /** XP per git commit (§6.3). */
@@ -227,107 +217,7 @@ export const XP_DAILY_STREAK_MAX_MULTIPLIER = 2.0;
 export const XP_PER_INTERACTION = 5;
 
 // ---------------------------------------------------------------------------
-// DEC-018: Daily cap helpers
-// ---------------------------------------------------------------------------
-
-/**
- * Map an event type to its daily-cap SignalType key (or null if not capped).
- */
-function signalTypeForEvent(eventType: string): SignalType | null {
-  switch (eventType) {
-    case "tokens.delta": return "tokens";
-    case "test.pass":    return "tests";
-    case "git.commit":   return "commits";
-    case "file.edit":    return "edits";
-    default:             return null;
-  }
-}
-
-/**
- * Return the cap limit (in XP) for a given SignalType.
- */
-function dailyCapLimit(signalType: SignalType): number {
-  switch (signalType) {
-    case "tokens":  return DAILY_CAP_TOKENS;
-    case "tests":   return DAILY_CAP_TESTS;
-    case "commits": return DAILY_CAP_COMMITS;
-    case "edits":   return DAILY_CAP_EDITS;
-  }
-}
-
-/**
- * Derive the UTC date string (YYYY-MM-DD) from an ISO8601 timestamp.
- */
-function utcDateKey(ts: string): string {
-  return new Date(ts).toISOString().slice(0, 10);
-}
-
-/**
- * Prune pet.dailyCaps to retain only the last DAILY_CAPS_RETENTION_DAYS days.
- */
-function pruneDailyCaps(caps: DailyCaps, today: string): DailyCaps {
-  const cutoff = new Date(today);
-  cutoff.setUTCDate(cutoff.getUTCDate() - DAILY_CAPS_RETENTION_DAYS + 1);
-  const cutoffKey = cutoff.toISOString().slice(0, 10);
-
-  const pruned: DailyCaps = {};
-  for (const [day, signals] of Object.entries(caps)) {
-    if (day >= cutoffKey) {
-      pruned[day] = signals;
-    }
-  }
-  return pruned;
-}
-
-/**
- * Apply DEC-018 daily cap logic to an xpDelta.
- *
- * Returns:
- *  - `grantedXp`: the XP actually to be granted (0 if fully capped)
- *  - `updatedCaps`: new dailyCaps after applying the grant
- *  - `capExceeded`: true if any XP was withheld
- *  - `requestedXp`: the original xpDelta (for the rejection event payload)
- */
-function applyDailyCap(
-  xpDelta: number,
-  signalType: SignalType,
-  today: string,
-  currentCaps: DailyCaps
-): {
-  grantedXp: number;
-  updatedCaps: DailyCaps;
-  capExceeded: boolean;
-  requestedXp: number;
-} {
-  const cap = dailyCapLimit(signalType);
-  const dayData: Partial<Record<SignalType, number>> = currentCaps[today] ?? {};
-  const accumulated = dayData[signalType] ?? 0;
-  const remaining = Math.max(0, cap - accumulated);
-
-  const grantedXp = Math.min(xpDelta, remaining);
-  const capExceeded = grantedXp < xpDelta;
-
-  // DailyCapsSchema uses z.record(SignalTypeSchema, ...) which in Zod 4 requires
-  // ALL enum keys to be present. We initialise missing keys to 0 so that the
-  // resulting day record passes schema validation when written via writeState().
-  const updatedDay: Record<SignalType, number> = {
-    tokens: dayData["tokens"] ?? 0,
-    tests: dayData["tests"] ?? 0,
-    commits: dayData["commits"] ?? 0,
-    edits: dayData["edits"] ?? 0,
-    [signalType]: accumulated + grantedXp,
-  };
-
-  const updatedCaps: DailyCaps = {
-    ...currentCaps,
-    [today]: updatedDay,
-  };
-
-  return { grantedXp, updatedCaps, capExceeded, requestedXp: xpDelta };
-}
-
-// ---------------------------------------------------------------------------
-// applyEvent — pure XP fold (architecture §6.4 + DEC-018)
+// applyEvent — pure XP fold (architecture §6.4)
 // ---------------------------------------------------------------------------
 
 export interface ApplyEventResult {
@@ -339,27 +229,20 @@ export interface ApplyEventResult {
  * Apply a GlyphlingEvent to a Pet.
  *
  * Pure reducer: accepts current Pet, returns a new Pet + any derived side-effect
- * events (level.up, unlock.gif.*, unlock.adoption, signal.rejected, etc.).
- * No I/O.
+ * events (level.up, unlock.gif.*, unlock.adoption, etc.). No I/O.
  *
- * Algorithm (§6.4 + DEC-018):
- *  1. If event.id has already been applied (event byte position <= eventsCursor)
- *     — no-op. The cursor check is the caller's responsibility; this function
- *     instead checks event.id order via a per-call guard parameter.
+ * Algorithm (§6.4):
+ *  1. If event.id has already been applied (event.id <= lastAppliedId) — no-op.
  *  2. If pet.diedAt != null — no-op (dead pets earn nothing).
- *  3. If event.xpDelta is defined and > 0:
- *     a. DEC-018: check daily cap for this signal type.
- *     b. Grant only the XP up to the cap; emit signal.rejected for the excess.
- *     c. pet.xp += grantedXp.
+ *  3. If event.xpDelta is defined and > 0: pet.xp += xpDelta.
  *  4. Derive new level via levelFromCumXp(pet.xp).
  *  5. If newLevel > pet.level: emit level.up side-effect event.
- *  6. Clamp displayed level at 1024; raw XP keeps accumulating (vanity).
+ *  6. Clamp displayed level at LEVEL_CAP; raw XP keeps accumulating (vanity).
  *  7. Check unlock thresholds; emit unlock.* events if newly crossed.
- *  8. At level 1024: emit unlock.gif.tier3 + ascended notice (if new).
- *  9. Prune pet.dailyCaps to last 7 days.
+ *  8. At LEVEL_CAP: emit unlock.gif.tier3 + ascended notice (if new).
  *
- * Cursor-based dedupe: caller passes `lastAppliedId` (ULID of the last
- * applied event, or "" to skip). If event.id <= lastAppliedId, it is a no-op.
+ * DEC-020: Daily caps removed. Rate-limits and cursor dedupe (DEC-018 Mechanisms 1-4)
+ * remain in effect.
  *
  * @param event          The event to apply.
  * @param pet            Current pet state.
@@ -380,71 +263,21 @@ export function applyEvent(
     return { pet, sideEffects: [] };
   }
 
-  // signal.rejected events are informational — they don't award XP but we
-  // still record them as applied (the pet doesn't change).
+  // signal.rejected events are informational — they don't award XP.
   if (event.type === "signal.rejected") {
     return { pet, sideEffects: [] };
   }
 
-  // If the event carries no XP delta, return the pet unchanged (but still
-  // record this event in the cursor — handled by the caller).
+  // If the event carries no XP delta, return the pet unchanged.
   if (event.xpDelta === undefined || event.xpDelta <= 0) {
     return { pet, sideEffects: [] };
   }
 
   const sideEffects: GlyphlingEvent[] = [];
   const now = new Date().toISOString();
-  const today = utcDateKey(event.ts);
-
-  // -------------------------------------------------------------------------
-  // DEC-018 Mechanism 3: daily XP cap enforcement
-  // -------------------------------------------------------------------------
-  let effectiveXpDelta = event.xpDelta;
-  let updatedDailyCaps = pruneDailyCaps(pet.dailyCaps, today);
-
-  const signalType = signalTypeForEvent(event.type);
-  if (signalType !== null) {
-    const {
-      grantedXp,
-      updatedCaps,
-      capExceeded,
-      requestedXp,
-    } = applyDailyCap(event.xpDelta, signalType, today, updatedDailyCaps);
-
-    updatedDailyCaps = updatedCaps;
-    effectiveXpDelta = grantedXp;
-
-    if (capExceeded) {
-      // Emit a signal.rejected event for the capped-off XP
-      sideEffects.push({
-        id: ulid(),
-        type: "signal.rejected",
-        ts: now,
-        petId: pet.id,
-        source: "xp-engine",
-        payload: {
-          reason: "cap.daily",
-          signal: event.type,
-          origEventId: event.id,
-          requestedXp,
-          grantedXp,
-        },
-      });
-    }
-
-    // If the cap grants zero XP, the pet doesn't change (but side effects
-    // including the rejection event are still returned).
-    if (effectiveXpDelta <= 0) {
-      const updatedPet: Pet = {
-        ...pet,
-        dailyCaps: updatedDailyCaps,
-      };
-      return { pet: updatedPet, sideEffects };
-    }
-  }
 
   // Step 3: add XP
-  const newXp = pet.xp + effectiveXpDelta;
+  const newXp = pet.xp + event.xpDelta;
 
   // Step 4: derive new level (caps at LEVEL_CAP)
   const newLevel = levelFromCumXp(newXp);
@@ -469,7 +302,7 @@ export function applyEvent(
       sideEffects.push(makeUnlockEvent("unlock.gif.tier2", pet.id, now));
     }
 
-    // Step 8: level 1024 ascension
+    // Step 8: LEVEL_CAP ascension
     if (pet.level < LEVEL_CAP && newLevel >= LEVEL_CAP) {
       sideEffects.push(makeUnlockEvent("unlock.gif.tier3", pet.id, now));
       // Ascension marker — renderer checks payload.ascended === true on level.up events
@@ -484,15 +317,13 @@ export function applyEvent(
     }
   }
 
-  // Step 6: clamp displayed level at 1024; XP continues to accumulate (vanity)
+  // Step 6: clamp displayed level at LEVEL_CAP; XP continues to accumulate (vanity)
   const clampedLevel = Math.min(newLevel, LEVEL_CAP);
 
-  // Step 9: update pet with new XP, level, and pruned+updated dailyCaps
   const updatedPet: Pet = {
     ...pet,
     xp: newXp,
     level: clampedLevel,
-    dailyCaps: updatedDailyCaps,
   };
 
   return { pet: updatedPet, sideEffects };

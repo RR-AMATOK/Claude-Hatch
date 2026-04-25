@@ -1,25 +1,31 @@
 /**
- * Tests for src/xp/engine.ts — XP engine (TODO-006)
+ * Tests for src/xp/engine.ts — XP engine (DEC-020)
  *
  * Covers:
- *   - xpToNext(L) formula and edge cases
- *   - cumulativeXpForLevel spot-checks against DEC-004 (~48M at 1024)
+ *   - PHI constant correctness
+ *   - xpToNext(L) formula and edge cases (DEC-020 golden curve)
+ *   - cumulativeXpForLevel spot-checks
  *   - levelFromCumXp inverse / saturation / monotonicity
  *   - displayLevel normal and Ascendant cases
  *   - applyEvent: dead pet guard, cursor dedupe, xpDelta application
  *   - applyEvent: level-up side effects, unlock thresholds
- *   - applyEvent: level cap at 1024, XP continues past cap
+ *   - applyEvent: level cap at 1618, XP continues past cap (vanity)
+ *   - Boundary cases: L=1, L=1618, L=1619 (unreachable)
+ *   - Token denominator: XP_PER_TOKEN_DENOMINATOR=1000
  *
  * All tests are pure — no disk I/O.
  */
 
 import { describe, it, expect } from "vitest";
 import {
+  PHI,
   xpToNext,
   levelFromCumXp,
   cumulativeXpForLevel,
   displayLevel,
   applyEvent,
+  xpForTokens,
+  XP_PER_TOKEN_DENOMINATOR,
   LEVEL_CAP,
   ASCENDANT_HONORIFIC,
 } from "./engine.js";
@@ -84,35 +90,95 @@ function makeEvent(overrides: Partial<GlyphlingEvent> = {}): GlyphlingEvent {
 }
 
 // ---------------------------------------------------------------------------
-// xpToNext
+// PHI constant
+// ---------------------------------------------------------------------------
+
+describe("PHI", () => {
+  it("equals (1 + sqrt(5)) / 2 to full float64 precision", () => {
+    expect(PHI).toBe((1 + Math.sqrt(5)) / 2);
+  });
+
+  it("is approximately 1.6180339887498949", () => {
+    expect(Math.abs(PHI - 1.6180339887498949)).toBeLessThan(1e-15);
+  });
+
+  it("satisfies the golden ratio identity: PHI^2 === PHI + 1 (within float epsilon)", () => {
+    expect(Math.abs(PHI * PHI - (PHI + 1))).toBeLessThan(1e-10);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// LEVEL_CAP
+// ---------------------------------------------------------------------------
+
+describe("LEVEL_CAP", () => {
+  it("is 1618 — the Golden Level (DEC-020)", () => {
+    expect(LEVEL_CAP).toBe(1618);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// XP_PER_TOKEN_DENOMINATOR
+// ---------------------------------------------------------------------------
+
+describe("XP_PER_TOKEN_DENOMINATOR", () => {
+  it("is 1000 (DEC-020: 1 XP per 1000 tokens)", () => {
+    expect(XP_PER_TOKEN_DENOMINATOR).toBe(1000);
+  });
+
+  it("xpForTokens(1000) = 1", () => {
+    expect(xpForTokens(1_000)).toBe(1);
+  });
+
+  it("xpForTokens(999) = 0 (below floor)", () => {
+    expect(xpForTokens(999)).toBe(0);
+  });
+
+  it("xpForTokens(100_000_000) = 100_000 (DEC-020 acceptance criterion)", () => {
+    expect(xpForTokens(100_000_000)).toBe(100_000);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// xpToNext — DEC-020 golden curve
 // ---------------------------------------------------------------------------
 
 describe("xpToNext", () => {
-  it("returns floor(25 * 1^1.20) = 25 at L=1", () => {
-    expect(xpToNext(1)).toBe(Math.floor(25 * Math.pow(1, 1.20)));
-    expect(xpToNext(1)).toBe(25);
+  it("returns floor(2 * 1^PHI) = 2 at L=1", () => {
+    const expected = Math.floor(2 * Math.pow(1, PHI));
+    expect(xpToNext(1)).toBe(expected);
+    expect(xpToNext(1)).toBe(2); // 2 * 1 = 2 exactly
   });
 
-  it("returns floor(25 * 10^1.20) at L=10", () => {
-    const expected = Math.floor(25 * Math.pow(10, 1.20));
+  it("returns floor(2 * 10^PHI) at L=10", () => {
+    const expected = Math.floor(2 * Math.pow(10, PHI));
     expect(xpToNext(10)).toBe(expected);
   });
 
-  it("returns floor(25 * 100^1.20) at L=100", () => {
-    const expected = Math.floor(25 * Math.pow(100, 1.20));
+  it("returns floor(2 * 100^PHI) at L=100", () => {
+    const expected = Math.floor(2 * Math.pow(100, PHI));
     expect(xpToNext(100)).toBe(expected);
   });
 
-  it("returns 0 at L=1024 (Ascendant — no next level)", () => {
+  it("returns 0 at L=1618 (Ascendant — no next level, DEC-020)", () => {
     expect(xpToNext(LEVEL_CAP)).toBe(0);
+    expect(xpToNext(1618)).toBe(0);
   });
 
-  it("returns 0 at L > 1024", () => {
-    expect(xpToNext(1025)).toBe(0);
+  it("returns 0 at L=1619 (unreachable — still clamps to 0)", () => {
+    expect(xpToNext(1619)).toBe(0);
     expect(xpToNext(9999)).toBe(0);
   });
 
-  it("returns a non-negative integer at every level 1..1023", () => {
+  it("is a finite non-negative integer at L=1618 boundary", () => {
+    const v = xpToNext(1617); // one below cap — last valid formula value
+    expect(Number.isFinite(v)).toBe(true);
+    expect(Number.isInteger(v)).toBe(true);
+    expect(v).toBeGreaterThanOrEqual(0);
+    expect(v).toBeLessThanOrEqual(2 ** 31 - 1); // fits in 32-bit int
+  });
+
+  it("returns a non-negative integer at every level 1..1617", () => {
     for (let L = 1; L < LEVEL_CAP; L++) {
       const v = xpToNext(L);
       expect(v).toBeGreaterThan(0);
@@ -120,8 +186,7 @@ describe("xpToNext", () => {
     }
   });
 
-  it("is monotonically non-decreasing for L in [1, 1023]", () => {
-    // xpToNext grows with L because L^1.20 is strictly increasing
+  it("is monotonically non-decreasing for L in [1, 1617]", () => {
     for (let L = 1; L < LEVEL_CAP - 1; L++) {
       expect(xpToNext(L + 1)).toBeGreaterThanOrEqual(xpToNext(L));
     }
@@ -129,7 +194,7 @@ describe("xpToNext", () => {
 });
 
 // ---------------------------------------------------------------------------
-// cumulativeXpForLevel + DEC-004 spot-checks
+// cumulativeXpForLevel
 // ---------------------------------------------------------------------------
 
 describe("cumulativeXpForLevel", () => {
@@ -153,26 +218,31 @@ describe("cumulativeXpForLevel", () => {
     expect(cumulativeXpForLevel(100)).toBe(expected);
   });
 
-  /**
-   * DEC-004: "Cumulative XP at 1024 ≈ 48,000,000"
-   * We verify the precomputed total is within 1% of that figure and also
-   * within ±50,000 for a tighter sanity bound (rounding should not drift more
-   * than a few hundred XP over 1024 levels).
-   */
-  it("level 1024 cumulative XP is approximately 48,000,000 (DEC-004)", () => {
-    const cumXp1024 = cumulativeXpForLevel(LEVEL_CAP);
-    // Must be in range [46,000,000 … 50,000,000] (within ~4% of 48M)
-    expect(cumXp1024).toBeGreaterThanOrEqual(46_000_000);
-    expect(cumXp1024).toBeLessThanOrEqual(50_000_000);
+  it("level 1618 cumulative XP is positive and finite", () => {
+    const cumXp1618 = cumulativeXpForLevel(LEVEL_CAP);
+    expect(cumXp1618).toBeGreaterThan(0);
+    expect(Number.isFinite(cumXp1618)).toBe(true);
+    expect(Number.isInteger(cumXp1618)).toBe(true);
   });
 
-  it("cumulativeXpForLevel is strictly increasing for L in [1, 1024]", () => {
+  it("level 1618 cumulative XP matches independent computation (±1 for rounding)", () => {
+    let expected = 0;
+    for (let k = 1; k < LEVEL_CAP; k++) expected += xpToNext(k);
+    expect(Math.abs(cumulativeXpForLevel(LEVEL_CAP) - expected)).toBeLessThanOrEqual(1);
+  });
+
+  it("cumulativeXpForLevel is strictly increasing for L in [1, 1618]", () => {
     let prev = cumulativeXpForLevel(1);
     for (let L = 2; L <= LEVEL_CAP; L++) {
       const curr = cumulativeXpForLevel(L);
       expect(curr).toBeGreaterThan(prev);
       prev = curr;
     }
+  });
+
+  it("round-trips: levelFromCumXp(cumulativeXpForLevel(1618)) === 1618", () => {
+    const cumXp1618 = cumulativeXpForLevel(LEVEL_CAP);
+    expect(levelFromCumXp(cumXp1618)).toBe(LEVEL_CAP);
   });
 });
 
@@ -199,29 +269,35 @@ describe("levelFromCumXp", () => {
   });
 
   it("round-trips: levelFromCumXp(cumulativeXpForLevel(L)) === L for spot levels", () => {
-    for (const L of [1, 2, 5, 10, 50, 100, 500, 1023, 1024]) {
+    for (const L of [1, 2, 5, 10, 31, 50, 100, 500, 1617, 1618]) {
       const cum = cumulativeXpForLevel(L);
       expect(levelFromCumXp(cum)).toBe(L);
     }
   });
 
-  it("saturates at 1024 for very large XP", () => {
-    expect(levelFromCumXp(999_999_999)).toBe(LEVEL_CAP);
+  it("saturates at 1618 for very large XP (DEC-020)", () => {
+    expect(levelFromCumXp(999_999_999_999)).toBe(LEVEL_CAP);
   });
 
-  it("returns LEVEL_CAP for cumXp === cumulativeXpForLevel(1024)", () => {
+  it("returns LEVEL_CAP for cumXp === cumulativeXpForLevel(1618)", () => {
     expect(levelFromCumXp(cumulativeXpForLevel(LEVEL_CAP))).toBe(LEVEL_CAP);
   });
 
   it("is monotonically non-decreasing", () => {
-    // Spot-check: increasing XP never decreases level
-    const checkPoints = [0, 25, 100, 1000, 10_000, 100_000, 1_000_000, 48_000_000];
+    const checkPoints = [0, 2, 10, 100, 1_000, 10_000, 100_000, 1_000_000];
     let prev = levelFromCumXp(0);
     for (const xp of checkPoints) {
       const curr = levelFromCumXp(xp);
       expect(curr).toBeGreaterThanOrEqual(prev);
       prev = curr;
     }
+  });
+
+  it("Bramble migration: xp=6000, old level=17 → new level=31 (DEC-020 §6 Option A)", () => {
+    // xp=6000 under the DEC-004 curve was level 17.
+    // Under the DEC-020 golden curve, level 31 should be the correct level.
+    const level = levelFromCumXp(6000);
+    expect(level).toBe(31);
   });
 });
 
@@ -230,19 +306,19 @@ describe("levelFromCumXp", () => {
 // ---------------------------------------------------------------------------
 
 describe("displayLevel", () => {
-  it("returns plain number string for levels 1-1023", () => {
+  it("returns plain number string for levels 1-1617", () => {
     expect(displayLevel(1)).toBe("1");
     expect(displayLevel(10)).toBe("10");
-    expect(displayLevel(1023)).toBe("1023");
+    expect(displayLevel(1617)).toBe("1617");
   });
 
-  it("returns '1024 · Ascendant' at LEVEL_CAP", () => {
+  it("returns '1618 · Ascendant' at LEVEL_CAP", () => {
     expect(displayLevel(LEVEL_CAP)).toBe(`${LEVEL_CAP} · ${ASCENDANT_HONORIFIC}`);
+    expect(displayLevel(1618)).toBe("1618 · Ascendant");
   });
 
-  it("returns Ascendant string for L > 1024", () => {
-    // Should not happen in practice, but guard it
-    expect(displayLevel(1025)).toBe(`${LEVEL_CAP} · ${ASCENDANT_HONORIFIC}`);
+  it("returns Ascendant string for L > 1618", () => {
+    expect(displayLevel(1619)).toBe(`${LEVEL_CAP} · ${ASCENDANT_HONORIFIC}`);
   });
 });
 
@@ -264,13 +340,12 @@ describe("applyEvent — guards", () => {
     });
     const event = makeEvent({ xpDelta: 100 });
     const result = applyEvent(event, pet);
-    expect(result.pet).toBe(pet); // reference equality — not mutated
+    expect(result.pet).toBe(pet);
     expect(result.sideEffects).toHaveLength(0);
   });
 
   it("event with no xpDelta returns unchanged pet", () => {
     const pet = makePet({ xp: 0, level: 1 });
-    // strip xpDelta from the helper's default — cannot set to undefined under exactOptionalPropertyTypes
     const { xpDelta: _unused, ...event } = makeEvent();
     void _unused;
     const result = applyEvent(event, pet);
@@ -288,7 +363,6 @@ describe("applyEvent — guards", () => {
 
   it("cursor dedupe: event.id <= lastAppliedId is a no-op", () => {
     const pet = makePet({ xp: 0, level: 1 });
-    // ULID "01HAAA..." < "01HBBB..." lexicographically
     const event = makeEvent({ id: "01HAAA000000000000000000" });
     const result = applyEvent(event, pet, "01HBBB000000000000000000");
     expect(result.pet).toBe(pet);
@@ -306,9 +380,9 @@ describe("applyEvent — guards", () => {
 
   it("cursor dedupe: event.id > lastAppliedId is processed", () => {
     const pet = makePet({ xp: 0, level: 1 });
-    const event = makeEvent({ id: "01HBBB000000000000000000", xpDelta: 25 });
+    const event = makeEvent({ id: "01HBBB000000000000000000", xpDelta: 2 });
     const result = applyEvent(event, pet, "01HAAA000000000000000000");
-    expect(result.pet.xp).toBe(25);
+    expect(result.pet.xp).toBe(2);
   });
 
   it("empty lastAppliedId (empty string) skips cursor check", () => {
@@ -331,14 +405,22 @@ describe("applyEvent — XP accumulation", () => {
     expect(result.pet.xp).toBe(150);
   });
 
-  it("XP is stored even past the level-1024 cumulative threshold (vanity)", () => {
+  it("XP is stored even past the level-1618 cumulative threshold (vanity)", () => {
     const capXp = cumulativeXpForLevel(LEVEL_CAP);
-    // Start at cap XP, level 1024
     const pet = makePet({ xp: capXp, level: LEVEL_CAP });
     const event = makeEvent({ xpDelta: 1_000_000 });
     const result = applyEvent(event, pet);
     expect(result.pet.xp).toBe(capXp + 1_000_000);
-    expect(result.pet.level).toBe(LEVEL_CAP); // level stays capped
+    expect(result.pet.level).toBe(LEVEL_CAP);
+  });
+
+  it("DEC-020: no cap.daily rejection — all XP from uncapped events is granted", () => {
+    const pet = makePet({ xp: 0, level: 1 });
+    const event = makeEvent({ xpDelta: 100_000 }); // would have far exceeded old daily caps
+    const result = applyEvent(event, pet);
+    expect(result.pet.xp).toBe(100_000);
+    const rejections = result.sideEffects.filter((e) => e.type === "signal.rejected");
+    expect(rejections).toHaveLength(0);
   });
 });
 
@@ -348,7 +430,7 @@ describe("applyEvent — XP accumulation", () => {
 
 describe("applyEvent — level-up side effects", () => {
   it("emits level.up event when level boundary is crossed", () => {
-    // xpToNext(1) = 25, so giving 25 XP to a level-1 pet → level 2
+    // xpToNext(1) = 2, so giving 2 XP to a level-1 pet → level 2
     const pet = makePet({ xp: 0, level: 1 });
     const event = makeEvent({ xpDelta: xpToNext(1) });
     const result = applyEvent(event, pet);
@@ -361,7 +443,6 @@ describe("applyEvent — level-up side effects", () => {
 
   it("emits no level.up when XP does not cross a level boundary", () => {
     const pet = makePet({ xp: 0, level: 1 });
-    // Give XP less than the full xpToNext(1)
     const event = makeEvent({ xpDelta: xpToNext(1) - 1 });
     const result = applyEvent(event, pet);
     expect(result.pet.level).toBe(1);
@@ -369,7 +450,6 @@ describe("applyEvent — level-up side effects", () => {
   });
 
   it("emits unlock.gif.tier1 when crossing level 25", () => {
-    // Give exactly enough XP to reach level 25
     const xpFor25 = cumulativeXpForLevel(25);
     const pet = makePet({ xp: xpFor25 - 1, level: 24 });
     const event = makeEvent({ xpDelta: 1 });
@@ -387,18 +467,18 @@ describe("applyEvent — level-up side effects", () => {
     expect(result.sideEffects.some((e) => e.type === "unlock.gif.tier2")).toBe(true);
   });
 
-  it("emits unlock.gif.tier3 when reaching level 1024", () => {
-    const xpFor1024 = cumulativeXpForLevel(LEVEL_CAP);
-    const pet = makePet({ xp: xpFor1024 - 1, level: LEVEL_CAP - 1 });
+  it("emits unlock.gif.tier3 when reaching level 1618 (DEC-020)", () => {
+    const xpFor1618 = cumulativeXpForLevel(LEVEL_CAP);
+    const pet = makePet({ xp: xpFor1618 - 1, level: LEVEL_CAP - 1 });
     const event = makeEvent({ xpDelta: 1 });
     const result = applyEvent(event, pet);
     expect(result.pet.level).toBe(LEVEL_CAP);
     expect(result.sideEffects.some((e) => e.type === "unlock.gif.tier3")).toBe(true);
   });
 
-  it("emits ascended side effect when reaching level 1024", () => {
-    const xpFor1024 = cumulativeXpForLevel(LEVEL_CAP);
-    const pet = makePet({ xp: xpFor1024 - 1, level: LEVEL_CAP - 1 });
+  it("emits ascended side effect when reaching level 1618 (DEC-020)", () => {
+    const xpFor1618 = cumulativeXpForLevel(LEVEL_CAP);
+    const pet = makePet({ xp: xpFor1618 - 1, level: LEVEL_CAP - 1 });
     const event = makeEvent({ xpDelta: 1 });
     const result = applyEvent(event, pet);
     const ascendedEvent = result.sideEffects.find(
@@ -407,9 +487,9 @@ describe("applyEvent — level-up side effects", () => {
     expect(ascendedEvent).toBeDefined();
   });
 
-  it("level is clamped at 1024 even with massive XP grant", () => {
-    const xpFor1024 = cumulativeXpForLevel(LEVEL_CAP);
-    const pet = makePet({ xp: xpFor1024 - 1, level: LEVEL_CAP - 1 });
+  it("level is clamped at 1618 even with massive XP grant (DEC-020)", () => {
+    const xpFor1618 = cumulativeXpForLevel(LEVEL_CAP);
+    const pet = makePet({ xp: xpFor1618 - 1, level: LEVEL_CAP - 1 });
     const event = makeEvent({ xpDelta: 100_000_000 });
     const result = applyEvent(event, pet);
     expect(result.pet.level).toBe(LEVEL_CAP);
@@ -417,10 +497,43 @@ describe("applyEvent — level-up side effects", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Cumulative XP at DEC-004 documented levels (must match ±1 per rounding)
+// Boundary cases: L=1, L=1618, L=1619
 // ---------------------------------------------------------------------------
 
-describe("DEC-004 cumulative XP spot-checks", () => {
+describe("boundary cases — L=1, L=1618, L=1619", () => {
+  it("xpToNext(1) is a finite positive integer", () => {
+    const v = xpToNext(1);
+    expect(Number.isFinite(v)).toBe(true);
+    expect(Number.isInteger(v)).toBe(true);
+    expect(v).toBeGreaterThan(0);
+  });
+
+  it("xpToNext(1618) = 0 (at cap, no next level)", () => {
+    expect(xpToNext(1618)).toBe(0);
+  });
+
+  it("xpToNext(1619) = 0 (beyond cap, unreachable)", () => {
+    expect(xpToNext(1619)).toBe(0);
+  });
+
+  it("levelFromCumXp(cumulativeXpForLevel(1618)) = 1618 (round-trip at cap)", () => {
+    const cumXp1618 = cumulativeXpForLevel(1618);
+    expect(levelFromCumXp(cumXp1618)).toBe(1618);
+  });
+
+  it("cumulativeXpForLevel(1618) is a finite non-negative integer", () => {
+    const v = cumulativeXpForLevel(1618);
+    expect(Number.isFinite(v)).toBe(true);
+    expect(Number.isInteger(v)).toBe(true);
+    expect(v).toBeGreaterThanOrEqual(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Cumulative XP spot-checks against independent computation
+// ---------------------------------------------------------------------------
+
+describe("cumulative XP spot-checks", () => {
   it("level 10 cumulative XP matches independent computation", () => {
     let expected = 0;
     for (let k = 1; k <= 9; k++) expected += xpToNext(k);
@@ -433,7 +546,7 @@ describe("DEC-004 cumulative XP spot-checks", () => {
     expect(Math.abs(cumulativeXpForLevel(100) - expected)).toBeLessThanOrEqual(1);
   });
 
-  it("level 1024 cumulative XP matches independent computation (≈48M, ±1)", () => {
+  it("level 1618 cumulative XP matches independent computation (±1)", () => {
     let expected = 0;
     for (let k = 1; k < LEVEL_CAP; k++) expected += xpToNext(k);
     expect(Math.abs(cumulativeXpForLevel(LEVEL_CAP) - expected)).toBeLessThanOrEqual(1);
