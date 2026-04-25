@@ -36,6 +36,23 @@ import { safeForLog } from "../util/lang.js";
 
 export type StateChangeListener = (state: StateFileV1) => void;
 
+/**
+ * TODO-038: Payload emitted to the optional onError callback in watchState()
+ * when a file-watch event triggers a parse/validation failure.
+ *
+ * `kind` discriminates this from the DEC-018 chain-break warning so the
+ * renderer can display a different banner or combine them without confusion.
+ */
+export interface WatchValidationError {
+  kind: "validation";
+  /** One-line human-readable reason (first Zod issue message, ≤60 chars). */
+  reason: string;
+  /** ms epoch when the bad write was first detected in this retry window. */
+  rejectedAt: number;
+  /** Number of retry attempts made (0 = first failure, max 1 per §4.4). */
+  retryCount: number;
+}
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -79,10 +96,27 @@ export async function readState(
   return readStateFromPath(config.paths.stateFile);
 }
 
+/**
+ * Result type for the watcher variant of readStateFromPath.
+ * Carries either the valid parsed state or a structured error reason.
+ */
+interface ReadStateResult {
+  state: StateFileV1 | null;
+  /** Non-null only when a parse/validation error was the terminal reason. */
+  parseError: string | null;
+}
+
 async function readStateFromPath(
   stateFile: string,
   attempt = 0
 ): Promise<StateFileV1 | null> {
+  return (await readStateFromPathFull(stateFile, attempt)).state;
+}
+
+async function readStateFromPathFull(
+  stateFile: string,
+  attempt = 0
+): Promise<ReadStateResult> {
   // SEC-003: stat first; refuse if too large
   try {
     const stat = await fs.promises.stat(stateFile);
@@ -90,10 +124,10 @@ async function readStateFromPath(
       process.stderr.write(
         `[glyphling] state.json exceeds size limit (${stat.size} bytes > ${MAX_STATE_BYTES}); refusing to load\n`
       );
-      return null;
+      return { state: null, parseError: null };
     }
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return { state: null, parseError: null };
     throw err;
   }
 
@@ -101,28 +135,49 @@ async function readStateFromPath(
   try {
     raw = await fs.promises.readFile(stateFile, "utf8");
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return { state: null, parseError: null };
     throw err;
   }
 
   // Empty file = same semantics as missing (first-run race or interrupted truncate).
-  if (raw.length === 0) return null;
+  if (raw.length === 0) return { state: null, parseError: null };
 
   try {
     const parsed: unknown = JSON.parse(raw);
-    return validateState(parsed);
+    const state = validateState(parsed);
+    return { state, parseError: null };
   } catch (err) {
     if (attempt === 0) {
       // §4.4: retry once after jitter in case a writer is mid-rename
       await sleep(READ_RETRY_JITTER_MS);
-      return readStateFromPath(stateFile, 1);
+      return readStateFromPathFull(stateFile, 1);
     }
-    // Still failing — log a warning and return null so callers can use last-known state
-    process.stderr.write(
-      `[glyphling] state.json failed to parse (attempt ${attempt + 1}): ${String(err)}\n`
-    );
-    return null;
+    // Still failing — extract a short reason from the error
+    const reason = extractParseReason(err);
+    // TODO-038: stderr is suppressed here; the caller (watchState) logs once
+    // after all retries to avoid 3× duplication.
+    return { state: null, parseError: reason };
   }
+}
+
+/**
+ * TODO-038: Extract a short ≤60-char reason string from a parse/Zod error.
+ * Used to populate WatchValidationError.reason.
+ */
+function extractParseReason(err: unknown): string {
+  if (err instanceof Error) {
+    // Zod errors have a `.issues` array; use the first issue's message.
+    const zodErr = err as Error & { issues?: Array<{ message: string; path?: unknown[] }> };
+    if (Array.isArray(zodErr.issues) && zodErr.issues.length > 0) {
+      const first = zodErr.issues[0]!;
+      const pathStr = Array.isArray(first.path) && first.path.length > 0
+        ? first.path.join(".") + ": "
+        : "";
+      return (pathStr + first.message).slice(0, 60);
+    }
+    return err.message.slice(0, 60);
+  }
+  return String(err).slice(0, 60);
 }
 
 // ---------------------------------------------------------------------------
@@ -575,8 +630,13 @@ function readLinesFromOffset(
  * Returns an unsubscribe function.
  *
  * On each debounced event, reads state.json and calls listener with the parsed
- * state. Silently skips events where the state file cannot be read (transient
- * rename window; next event will catch up).
+ * state. When the read fails schema/parse validation, calls onError (if provided)
+ * with a structured WatchValidationError — listener is NOT called.
+ *
+ * TODO-038 additions:
+ *   - onError callback surfaces parse/validation failures to the store (and TUI).
+ *   - stderr is emitted ONCE per unique error message per failure batch
+ *     (not once per retry attempt) to prevent 2× duplication.
  *
  * Note: Risk §13.2 — iCloud folder may cause spurious chokidar events. The
  * debounce collapses bursts. If dev env is unreliable, override GLYPHLING_HOME
@@ -584,11 +644,21 @@ function readLinesFromOffset(
  */
 export function watchState(
   config: Config,
-  listener: StateChangeListener
+  listener: StateChangeListener,
+  onError?: (err: WatchValidationError) => void
 ): () => void {
   const { stateFile } = config.paths;
 
   let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+
+  // TODO-038: track the last stderr message we emitted to deduplicate.
+  // Only log when the error message changes, so repeated failures on the same
+  // bad write produce exactly one stderr line, not one per debounce tick.
+  let lastLoggedError: string | null = null;
+
+  // Track when the current failure batch started (for rejectedAt).
+  let failureBatchStartMs: number | null = null;
+  let retryCount = 0;
 
   const watcher = chokidarWatch(stateFile, {
     persistent: false,
@@ -604,9 +674,46 @@ export function watchState(
     }
     debounceTimer = setTimeout(() => {
       debounceTimer = null;
-      // Fire-and-forget read; errors are handled inside readStateFromPath
-      readStateFromPath(stateFile).then((state) => {
-        if (state !== null) listener(state);
+      // TODO-038: use readStateFromPathFull to get structured error info
+      readStateFromPathFull(stateFile).then((result) => {
+        if (result.state !== null) {
+          // Successful read — reset failure tracking, call the success listener
+          lastLoggedError = null;
+          failureBatchStartMs = null;
+          retryCount = 0;
+          listener(result.state);
+        } else if (result.parseError !== null) {
+          // Parse/validation failure — surface to the store via onError,
+          // and emit ONE stderr line (deduplicated by message content).
+          const now = Date.now();
+          if (failureBatchStartMs === null) {
+            failureBatchStartMs = now;
+            retryCount = 0;
+          } else {
+            retryCount += 1;
+          }
+
+          // Deduplicate stderr: only log when the message changes
+          if (result.parseError !== lastLoggedError) {
+            process.stderr.write(
+              `[glyphling] state.json invalid (watcher rejected): ${result.parseError}\n`
+            );
+            lastLoggedError = result.parseError;
+          }
+
+          if (onError !== undefined) {
+            onError({
+              kind: "validation",
+              reason: result.parseError,
+              rejectedAt: failureBatchStartMs,
+              retryCount,
+            });
+          }
+        }
+        // If result.state === null && result.parseError === null it means the
+        // file was missing/empty/oversized — not a validation error; don't surface.
+      }).catch(() => {
+        // Unexpected I/O error — not a schema issue; silence it (next tick recovers)
       });
     }, WATCH_DEBOUNCE_MS);
   };
