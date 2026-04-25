@@ -307,13 +307,16 @@ function applyDailyCap(
   const grantedXp = Math.min(xpDelta, remaining);
   const capExceeded = grantedXp < xpDelta;
 
-  // DailyCapsSchema uses z.record(SignalTypeSchema, ...) which TypeScript infers
-  // as Partial<Record<SignalType, number>>. We spread the existing partial record
-  // and set the specific key — the resulting object satisfies the schema at runtime.
-  const updatedDay = {
-    ...dayData,
+  // DailyCapsSchema uses z.record(SignalTypeSchema, ...) which in Zod 4 requires
+  // ALL enum keys to be present. We initialise missing keys to 0 so that the
+  // resulting day record passes schema validation when written via writeState().
+  const updatedDay: Record<SignalType, number> = {
+    tokens: dayData["tokens"] ?? 0,
+    tests: dayData["tests"] ?? 0,
+    commits: dayData["commits"] ?? 0,
+    edits: dayData["edits"] ?? 0,
     [signalType]: accumulated + grantedXp,
-  } as Record<SignalType, number>;
+  };
 
   const updatedCaps: DailyCaps = {
     ...currentCaps,
