@@ -2,15 +2,21 @@
  * Daemon integration tests:
  *   - Lockfile contention: second watch attempt exits non-zero
  *   - Daemon starts and stops cleanly
+ *   - Daemon stays alive past startup (regression for keep-alive bug)
  */
 
 import fs from "fs";
 import os from "os";
 import path from "path";
+import { spawn } from "child_process";
+import { fileURLToPath } from "url";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import lockfile from "proper-lockfile";
 import { buildConfig } from "../config/env.js";
 import { runWatchDaemon } from "./index.js";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = path.resolve(__dirname, "..", "..");
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -132,4 +138,56 @@ describe("runWatchDaemon", () => {
     // Void the promise to avoid unhandled rejection warnings
     void daemonPromise.catch(() => undefined);
   });
+
+  it("stays alive past startup (regression: collector flushTimer must not be unref'd)", async () => {
+    // Spawns the real bin in a subprocess and verifies it is still alive
+    // 1.5 s after launch. Before the keep-alive fix, the daemon exited
+    // silently within milliseconds of "Token collector started" because the
+    // flush interval was unref'd and chokidar's persistent flag did not hold
+    // the event loop open under macOS + iCloud Drive paths.
+    const binPath = path.join(REPO_ROOT, "dist", "src", "bin.js");
+    const binExists = await fs.promises
+      .access(binPath)
+      .then(() => true)
+      .catch(() => false);
+    if (!binExists) {
+      // Build hasn't run; skip without failing the suite.
+      return;
+    }
+
+    const child = spawn(process.execPath, [binPath, "watch"], {
+      env: {
+        ...process.env,
+        GLYPHLING_HOME: tmpDir,
+        GLYPHLING_PROJECTS_DIR: process.env["GLYPHLING_PROJECTS_DIR"]!,
+      },
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+
+    let exited = false;
+    let earlyExitCode: number | null = null;
+    child.on("exit", (code) => {
+      exited = true;
+      earlyExitCode = code;
+    });
+
+    try {
+      // Give the daemon enough time to: acquire lock, start collector, and
+      // run idle. If the keep-alive bug returns, it exits well before 1.5 s.
+      await new Promise((r) => setTimeout(r, 1500));
+      expect(exited, `daemon exited early with code ${earlyExitCode}`).toBe(false);
+    } finally {
+      // Clean shutdown
+      if (!exited) child.kill("SIGTERM");
+      await new Promise<void>((resolve) => {
+        if (exited) return resolve();
+        child.on("exit", () => resolve());
+        // Hard timeout in case SIGTERM is ignored
+        setTimeout(() => {
+          if (!exited) child.kill("SIGKILL");
+          resolve();
+        }, 2_000);
+      });
+    }
+  }, 10_000);
 });
