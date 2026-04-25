@@ -257,15 +257,16 @@ describe("renderOnce — graceful degradation", () => {
     expect(output.trim()).toBe("glyphling · no pet");
   });
 
-  it("prints fallback output and exits 0 when state.json is schema-invalid", async () => {
+  it("prints stale output and exits 0 when state.json is schema-invalid (TODO-038)", async () => {
     const config = buildConfig(tmpDir);
     await fs.promises.mkdir(path.dirname(config.paths.stateFile), { recursive: true });
-    // Write completely invalid JSON
+    // Write completely invalid JSON that will fail schema validation
     await fs.promises.writeFile(config.paths.stateFile, '{"schemaVersion": 999, "junk": true}');
 
     const { output, code } = await captureStdout(() => renderOnce(config));
     expect(code).toBe(0);
-    expect(output.trim()).toBe("glyphling · no pet");
+    // TODO-038: schema-invalid → distinct stale message (not "no pet")
+    expect(output.trim()).toBe("glyphling · state stale");
   });
 
   it("prints fallback output and exits 0 when state.json is empty", async () => {
@@ -289,7 +290,7 @@ describe("renderOnce — graceful degradation", () => {
     expect(output.trim()).toBe("glyphling · no pet");
   });
 
-  it("does not throw or exit non-zero even when state is corrupt", async () => {
+  it("does not throw or exit non-zero even when state is corrupt (TODO-038)", async () => {
     const config = buildConfig(tmpDir);
     await fs.promises.mkdir(path.dirname(config.paths.stateFile), { recursive: true });
     await fs.promises.writeFile(config.paths.stateFile, "not json at all {{{{");
@@ -304,6 +305,23 @@ describe("renderOnce — graceful degradation", () => {
     }
     expect(threw).toBe(false);
     expect(code).toBe(0);
+  });
+
+  it("stale output for schema-invalid is distinct from no-pet fallback (TODO-038)", async () => {
+    const config = buildConfig(tmpDir);
+    await fs.promises.mkdir(path.dirname(config.paths.stateFile), { recursive: true });
+
+    // Missing file → "no pet"
+    const { output: noPetOutput } = await captureStdout(() => renderOnce(config));
+    expect(noPetOutput.trim()).toBe("glyphling · no pet");
+
+    // Schema-invalid file → "state stale"
+    await fs.promises.writeFile(config.paths.stateFile, '{"schemaVersion": 999}');
+    const { output: staleOutput } = await captureStdout(() => renderOnce(config));
+    expect(staleOutput.trim()).toBe("glyphling · state stale");
+
+    // The two outputs must be different
+    expect(noPetOutput.trim()).not.toBe(staleOutput.trim());
   });
 });
 

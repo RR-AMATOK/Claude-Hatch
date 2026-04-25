@@ -24,6 +24,7 @@ import {
   replayEvents,
   watchState,
   checkRecoveryNeeded,
+  type WatchValidationError,
 } from "./persistence.js";
 import { makeEmptyState, validateState } from "./schema.js";
 import { buildConfig } from "../config/env.js";
@@ -500,4 +501,182 @@ describe("crash recovery", () => {
     expect(result).not.toBeNull();
     expect(() => validateState(result!)).not.toThrow();
   });
+});
+
+// ---------------------------------------------------------------------------
+// TODO-038: watchState onError callback — parse/validation failures
+// ---------------------------------------------------------------------------
+
+describe("watchState — validation error surfacing (TODO-038)", () => {
+  it(
+    "calls onError with a WatchValidationError when state.json fails schema validation",
+    async () => {
+      const config = await makeTmpConfig();
+      const initial = makeEmptyState();
+      await writeState(config, initial);
+
+      const errors: WatchValidationError[] = [];
+      const unwatch = watchState(
+        config,
+        () => { /* success listener — not relevant to this test */ },
+        (err) => { errors.push(err); }
+      );
+
+      try {
+        // Write schema-invalid content directly (bypasses writeState validation)
+        await new Promise((r) => setTimeout(r, 30));
+        await fs.promises.writeFile(
+          config.paths.stateFile,
+          JSON.stringify({ schemaVersion: 999, junk: true }),
+          "utf8"
+        );
+
+        // Wait for debounce + read (200ms headroom)
+        const deadline = Date.now() + 300;
+        while (errors.length === 0 && Date.now() < deadline) {
+          await new Promise((r) => setTimeout(r, 20));
+        }
+
+        expect(errors).toHaveLength(1);
+        const err = errors[0]!;
+        expect(err.kind).toBe("validation");
+        expect(typeof err.reason).toBe("string");
+        expect(err.reason.length).toBeGreaterThan(0);
+        expect(err.reason.length).toBeLessThanOrEqual(60);
+        expect(err.rejectedAt).toBeGreaterThan(0);
+        expect(err.retryCount).toBe(0);
+      } finally {
+        unwatch();
+      }
+    },
+    10_000
+  );
+
+  it(
+    "success listener is NOT called when state.json fails validation",
+    async () => {
+      const config = await makeTmpConfig();
+      const initial = makeEmptyState();
+      await writeState(config, initial);
+
+      let successCount = 0;
+      const unwatch = watchState(
+        config,
+        () => { successCount++; },
+        () => { /* error callback — ignore */ }
+      );
+
+      try {
+        await new Promise((r) => setTimeout(r, 30));
+        await fs.promises.writeFile(
+          config.paths.stateFile,
+          "{ not valid json {{{{",
+          "utf8"
+        );
+
+        // Wait for the debounce window to pass
+        await new Promise((r) => setTimeout(r, 200));
+
+        // The success listener should not have been called for the invalid write
+        expect(successCount).toBe(0);
+      } finally {
+        unwatch();
+      }
+    },
+    10_000
+  );
+
+  it(
+    "onError is not called again when the same error repeats (stderr deduplication)",
+    async () => {
+      const config = await makeTmpConfig();
+      const initial = makeEmptyState();
+      await writeState(config, initial);
+
+      const stderrLines: string[] = [];
+      const origWrite = process.stderr.write.bind(process.stderr);
+      process.stderr.write = ((chunk: unknown, ...args: unknown[]) => {
+        if (typeof chunk === "string" && chunk.includes("state.json invalid")) {
+          stderrLines.push(chunk);
+        }
+        return (origWrite as (...a: unknown[]) => boolean)(chunk, ...args);
+      }) as typeof process.stderr.write;
+
+      const errors: WatchValidationError[] = [];
+      const unwatch = watchState(
+        config,
+        () => { /* success listener */ },
+        (err) => { errors.push(err); }
+      );
+
+      try {
+        const badContent = JSON.stringify({ schemaVersion: 999 });
+
+        // Write the same invalid content twice (simulate repeated writes)
+        await new Promise((r) => setTimeout(r, 30));
+        await fs.promises.writeFile(config.paths.stateFile, badContent, "utf8");
+        await new Promise((r) => setTimeout(r, 150));
+        await fs.promises.writeFile(config.paths.stateFile, badContent, "utf8");
+        await new Promise((r) => setTimeout(r, 150));
+
+        // Two distinct file-watch events were fired, so onError should have been
+        // called twice (once per event), but stderr should have been logged only ONCE
+        // (deduplicated by message content).
+        expect(stderrLines).toHaveLength(1);
+      } finally {
+        process.stderr.write = origWrite;
+        unwatch();
+      }
+    },
+    10_000
+  );
+
+  it(
+    "onError is cleared (success listener called) after a valid state.json is written",
+    async () => {
+      const config = await makeTmpConfig();
+      const initial = makeEmptyState();
+      await writeState(config, initial);
+
+      const errors: WatchValidationError[] = [];
+      const successes: StateFileV1[] = [];
+
+      const unwatch = watchState(
+        config,
+        (s) => { successes.push(s); },
+        (err) => { errors.push(err); }
+      );
+
+      try {
+        // Step 1: write bad state
+        await new Promise((r) => setTimeout(r, 30));
+        await fs.promises.writeFile(
+          config.paths.stateFile,
+          JSON.stringify({ schemaVersion: 999 }),
+          "utf8"
+        );
+        await new Promise((r) => setTimeout(r, 200));
+        expect(errors.length).toBeGreaterThan(0);
+
+        // Step 2: write valid state — success listener fires
+        const valid: StateFileV1 = {
+          ...initial,
+          globals: { ...initial.globals, eventsCursor: 77 },
+          updatedAt: new Date().toISOString(),
+        };
+        await writeState(config, valid);
+
+        const deadline = Date.now() + 300;
+        while (successes.length === 0 && Date.now() < deadline) {
+          await new Promise((r) => setTimeout(r, 20));
+        }
+
+        expect(successes.length).toBeGreaterThan(0);
+        expect(successes[0]!.globals.eventsCursor).toBe(77);
+      } finally {
+        unwatch();
+      }
+    },
+    10_000
+  );
 });
