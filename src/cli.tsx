@@ -15,6 +15,8 @@ import { resolveStateHome, assertStateNotSymlinked } from "./config/env.js";
 import { renderOnce } from "./render/statusline.js";
 import { captureMain } from "./render/capture.js";
 import { exportCommand, hatchCommand } from "./commands/handlers.js";
+import { runWatchDaemon } from "./daemon/index.js";
+import { runDoctor } from "./commands/doctor.js";
 
 export async function main(argv: string[]): Promise<number> {
   // Resolve state home — will throw if DEC-008 guard trips.
@@ -32,8 +34,19 @@ export async function main(argv: string[]): Promise<number> {
     return captureMain(argv.slice(1));
   }
 
+  // `glyphling doctor` — read-only diagnostics, no symlink check needed.
+  if (argv[0] === "doctor") {
+    return runDoctor(config);
+  }
+
   // SEC-006: All writer paths check that state files are not symlinks.
   assertStateNotSymlinked(config);
+
+  // `glyphling watch` — long-running token watcher daemon. Writer path
+  // (acquires daemon lockfile + appends events), so symlink check runs first.
+  if (argv[0] === "watch") {
+    return runWatchDaemon(config);
+  }
 
   // One-shot export subcommand — `glyphling export <tier> [sceneId]`
   if (argv[0] === "export") {
