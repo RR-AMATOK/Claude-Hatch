@@ -58,6 +58,9 @@ auth.json
 .claude/shell-snapshots/
 .claude/sessions/
 .claude/cache/
+.claude/.project-type
+.claude/scheduled_tasks.lock
+.claude/*.lock
 
 # Internal coordination / agent-state files (DEC-007) — kept private
 # These are session scratchpads with agent back-and-forth, preliminary decisions,

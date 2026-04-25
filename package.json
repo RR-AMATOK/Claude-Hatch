@@ -5,17 +5,26 @@
   "license": "MIT",
   "type": "module",
   "bin": {
-    "glyphling": "./dist/src/bin.js"
+    "glyphling": "dist/src/bin.js"
   },
+  "files": [
+    "dist/**/*.js",
+    "dist/**/*.d.ts",
+    "!dist/**/*.test.*",
+    "LICENSE",
+    "README.md",
+    "CHANGELOG.md"
+  ],
   "scripts": {
     "dev": "GLYPHLING_HOME=./.dev-state/dev tsx src/cli.tsx",
     "demo": "GLYPHLING_HOME=./.dev-state/demo tsx src/cli.tsx",
     "test": "GLYPHLING_HOME=./.dev-state/test vitest",
-    "build": "tsc",
-    "typecheck": "tsc --noEmit"
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm test",
+    "prepack": "rm -rf dist && npm run build"
   },
   "dependencies": {
-    "@types/proper-lockfile": "^4.1.4",
     "chokidar": "^5.0.0",
     "ink": "^5.1.0",
     "proper-lockfile": "^4.1.2",
@@ -25,6 +34,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
+    "@types/proper-lockfile": "^4.1.4",
     "@types/react": "^18.3.1",
     "tsx": "^4.19.2",
     "typescript": "^5.7.3",
@@ -32,5 +42,14 @@
   },
   "engines": {
     "node": ">=20.0.0"
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/RR-AMATOK/Claude-Hatch.git"
+  },
+  "bugs": {
+    "url": "https://github.com/RR-AMATOK/Claude-Hatch/issues"
+  },
+  "homepage": "https://github.com/RR-AMATOK/Claude-Hatch#readme",
+  "keywords": ["claude-code", "statusline", "tamagotchi", "cli", "tui", "ink", "pet"]
 }
