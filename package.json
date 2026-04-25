@@ -21,6 +21,8 @@
     "test": "GLYPHLING_HOME=./.dev-state/test vitest",
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
+    "demo:lint": "bash scripts/check-tapes.sh",
+    "demo:record": "bash scripts/record-demo.sh",
     "prepublishOnly": "npm test",
     "prepack": "rm -rf dist && npm run build"
   },
