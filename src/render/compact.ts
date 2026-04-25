@@ -18,6 +18,11 @@
 
 import type { Pet, EggType } from "../state/schema.js";
 import { isAscendant } from "../lifecycle/ascendant.js";
+import {
+  LEVEL_CAP,
+  levelFromCumXp,
+  cumulativeXpForLevel,
+} from "../xp/engine.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -39,15 +44,6 @@ const MAX_COLS = 60;
 
 /** Hard ceiling: rows per compact frame. */
 const MAX_ROWS = 3;
-
-/**
- * Level cap — duplicated from xp/engine.ts to keep statusline self-contained (DEC-016).
- * DEC-020: 1024 → 1618 (the Golden Level).
- */
-const LEVEL_CAP = 1618;
-
-/** φ = (1+√5)/2 — golden ratio exponent for the DEC-020 XP curve. */
-const PHI_COMPACT = (1 + Math.sqrt(5)) / 2;
 
 // ---------------------------------------------------------------------------
 // Responsive tier classification (statusline-wide.md §2)
@@ -86,42 +82,15 @@ export const WIDE_HUD_START_COL = 15;
 export const WIDE_SILHOUETTE_MAX_COLS = 18;
 
 /**
- * Lazy cumulative XP table — `table[L]` = total XP to reach level L.
- * Mirrors xp/engine.ts; recomputed here so the statusline never imports
- * the heavier engine module on the hot path.
- */
-let _cumTable: number[] | null = null;
-function cumulativeTable(): number[] {
-  if (_cumTable !== null) return _cumTable;
-  const t = new Array<number>(LEVEL_CAP + 1).fill(0);
-  let running = 0;
-  for (let k = 1; k <= LEVEL_CAP; k++) {
-    t[k] = running;
-    // DEC-020 golden curve: floor(2 * k^φ)
-    running += Math.floor(2 * Math.pow(k, PHI_COMPACT));
-  }
-  _cumTable = t;
-  return t;
-}
-
-/**
- * Derive level from cumulative XP. Authoritative over the stored `pet.level`
- * field — any drift between the two resolves in favour of the xp-derived value.
+ * Derive level from cumulative XP. Thin re-export of `levelFromCumXp` from
+ * `xp/engine.ts` — kept here for backward compatibility with importers that
+ * reference `deriveLevel` from `compact.js` (e.g. App.test.tsx).
  *
- * Exported so App.tsx (TUI) can share the DEC-020-correct implementation
- * instead of carrying a local stale copy.
+ * Authoritative over the stored `pet.level` field — any drift between the two
+ * resolves in favour of the xp-derived value.
  */
 export function deriveLevel(xp: number): number {
-  if (xp < 0) return 1;
-  const t = cumulativeTable();
-  let lo = 1;
-  let hi = LEVEL_CAP;
-  while (lo < hi) {
-    const mid = (lo + hi + 1) >> 1;
-    if ((t[mid] ?? Infinity) <= xp) lo = mid;
-    else hi = mid - 1;
-  }
-  return lo;
+  return levelFromCumXp(xp);
 }
 
 // ---------------------------------------------------------------------------
@@ -816,9 +785,8 @@ function xpBarFill(pet: Pet): { filled: number; empty: number } {
   const derivedLevel = deriveLevel(pet.xp);
   if (derivedLevel >= LEVEL_CAP) return { filled: 14, empty: 0 };
 
-  const t = cumulativeTable();
-  const floorXp = t[derivedLevel] ?? 0;
-  const nextXp = t[derivedLevel + 1] ?? floorXp + 1;
+  const floorXp = cumulativeXpForLevel(derivedLevel);
+  const nextXp = cumulativeXpForLevel(derivedLevel + 1);
   const span = Math.max(1, nextXp - floorXp);
   const ratio = Math.min(1, Math.max(0, (pet.xp - floorXp) / span));
   const filled = Math.floor(ratio * 14);

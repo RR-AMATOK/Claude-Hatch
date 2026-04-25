@@ -15,7 +15,7 @@
  * DEC-008: uses config.stateHome — never touches ~/.claude/ in dev/test.
  * DEC-016: does NOT import or modify statusline.ts.
  * DEC-017: species values are lowercase (circuit | rune | shard | bloom).
- * DEC-020: LEVEL_CAP=1618, golden curve floor(2*k^φ). deriveLevel imported from compact.
+ * DEC-020: LEVEL_CAP=1618, golden curve floor(2*k^φ). levelFromCumXp/LEVEL_CAP imported from xp/engine.
  * NO_MOTION=1: animation interval is skipped; single static frame shown.
  * NO_COLOR=1: all ANSI codes suppressed via detectColorMode.
  *
@@ -34,9 +34,9 @@ import {
   deriveMood,
   detectColorMode,
   MOOD_GLYPHS,
-  deriveLevel,
   type ColorMode,
 } from "./compact.js";
+import { LEVEL_CAP, levelFromCumXp, cumulativeXpForLevel } from "../xp/engine.js";
 import { useAnimation } from "./animation.js";
 import { glyphlingStore, bootStore, useGlyphlingStore } from "./useGlyphlingStore.js";
 import { useEventLog, formatRelativeTime, type LogEntry } from "./useEventLog.js";
@@ -49,37 +49,16 @@ import {
 // ---------------------------------------------------------------------------
 // XP / level helpers — DEC-020 correct (LEVEL_CAP=1618, golden curve)
 //
-// Only cumulativeTable + xpProgress remain here; deriveLevel is imported from
-// compact.ts to keep a single DEC-020-authoritative implementation.
+// levelFromCumXp and cumulativeXpForLevel are imported from xp/engine.ts —
+// single source of truth per refactor in this commit.
 // ---------------------------------------------------------------------------
-
-/** DEC-020: The Golden Level cap (⌊φ × 1000⌋ = 1618). */
-const LEVEL_CAP = 1618;
-
-/** φ = (1+√5)/2 — golden ratio, DEC-020 curve exponent. */
-const PHI = (1 + Math.sqrt(5)) / 2;
-
-let _cumTable: number[] | null = null;
-function cumulativeTable(): number[] {
-  if (_cumTable !== null) return _cumTable;
-  const t = new Array<number>(LEVEL_CAP + 1).fill(0);
-  let running = 0;
-  for (let k = 1; k <= LEVEL_CAP; k++) {
-    t[k] = running;
-    // DEC-020 golden curve: floor(2 * k^φ)
-    running += Math.floor(2 * Math.pow(k, PHI));
-  }
-  _cumTable = t;
-  return t;
-}
 
 /** Returns { level, filled } where filled is 0–14 (cells for 14-cell XP bar). */
 function xpProgress(xp: number): { level: number; filled: number } {
-  const level = deriveLevel(xp);
+  const level = levelFromCumXp(xp);
   if (level >= LEVEL_CAP) return { level, filled: 14 };
-  const t = cumulativeTable();
-  const floorXp = t[level] ?? 0;
-  const nextXp = t[level + 1] ?? floorXp + 1;
+  const floorXp = cumulativeXpForLevel(level);
+  const nextXp = cumulativeXpForLevel(level + 1);
   const span = Math.max(1, nextXp - floorXp);
   const ratio = Math.min(1, Math.max(0, (xp - floorXp) / span));
   const filled = Math.floor(ratio * 14);
@@ -175,7 +154,7 @@ const PetView = memo(function PetView({ pet, colorMode }: PetViewProps) {
   // don't change (the scene is still selected correctly for the pet's state).
   const frame = useAnimation(pet);
 
-  const level = deriveLevel(pet.xp);
+  const level = levelFromCumXp(pet.xp);
   const stage = getLifeStage(level);
 
   // Eye-blink tick (cosmetic, 1 Hz) — decoupled from scene fps.
