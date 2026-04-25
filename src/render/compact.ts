@@ -26,6 +26,14 @@ import { isAscendant } from "../lifecycle/ascendant.js";
 /** Clock period for deterministic tick cycling (1 Hz = 1000 ms, DEC-016). */
 export const REFRESH_MS = 1000;
 
+/**
+ * How long (ms) the level-up animation scene plays after a level boundary
+ * is crossed. At 1 Hz statusline refresh this is ~3 ticks of animation.
+ * The XP engine writes `pet.lastLevelUpAt` when the level increases;
+ * pickScene() checks the elapsed time against this window.
+ */
+export const LEVEL_UP_WINDOW_MS = 3000;
+
 /** Hard ceiling: columns per row (narrow tier). */
 const MAX_COLS = 60;
 
@@ -665,9 +673,23 @@ export function deriveMood(pet: Pet, nowMs: number): MoodKey {
  * Falls back to idle-baseline for unrecognized scenes.
  *
  * Ascendants (L1618, DEC-019 D6 / DEC-020) never enter the sick scene.
+ *
+ * Level-up scene: plays for LEVEL_UP_WINDOW_MS (3 s) after `pet.lastLevelUpAt`
+ * is set by the XP engine. The one-shot statusline renderer (DEC-016) reads
+ * this from the persisted pet state — no coordination required.
  */
-export function pickScene(pet: Pet, _nowMs: number): SceneKey {
+export function pickScene(pet: Pet, nowMs: number): SceneKey {
   if (pet.diedAt !== null) return "death";
+
+  // Level-up animation window: highest priority after death.
+  // pet.lastLevelUpAt is set by applyEvent when pet.level increases.
+  const lastLevelUpAt = pet.lastLevelUpAt ?? null;
+  if (
+    lastLevelUpAt !== null &&
+    nowMs - Date.parse(lastLevelUpAt) < LEVEL_UP_WINDOW_MS
+  ) {
+    return "level-up";
+  }
 
   // Ascendants are immune to the sick scene (DEC-019 D6).
   if (isAscendant(pet)) {

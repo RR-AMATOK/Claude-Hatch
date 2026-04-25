@@ -16,6 +16,7 @@ import type { Pet } from "../state/schema.js";
 import { cumulativeXpForLevel } from "../xp/engine.js";
 import {
   REFRESH_MS,
+  LEVEL_UP_WINDOW_MS,
   pickCompactFrame,
   assertFrameDimensions,
   deriveMood,
@@ -70,6 +71,7 @@ function makePet(overrides: Partial<Pet> = {}): Pet {
     tombstone: null,
     languageExposure: {},
     dailyCaps: {},
+    lastLevelUpAt: null,
     ...overrides,
   };
 }
@@ -381,6 +383,47 @@ describe("pickScene", () => {
 
   it("returns 'idle-baseline' for Friendly personality", () => {
     const pet = makePet();
+    expect(pickScene(pet, now)).toBe("idle-baseline");
+  });
+
+  // Bug C: level-up scene triggers within LEVEL_UP_WINDOW_MS
+  it("Bug C: returns 'level-up' when lastLevelUpAt is within LEVEL_UP_WINDOW_MS", () => {
+    const justNow = new Date(now - 500).toISOString(); // 500 ms ago — within 3s window
+    const pet = makePet({ lastLevelUpAt: justNow });
+    expect(pickScene(pet, now)).toBe("level-up");
+  });
+
+  it("Bug C: returns idle scene when lastLevelUpAt is beyond LEVEL_UP_WINDOW_MS", () => {
+    const fiveSecondsAgo = new Date(now - 5000).toISOString(); // 5s ago — outside 3s window
+    const pet = makePet({ lastLevelUpAt: fiveSecondsAgo });
+    // Should fall through to personality-based idle
+    expect(pickScene(pet, now)).toBe("idle-baseline");
+  });
+
+  it("Bug C: returns idle scene when lastLevelUpAt is null", () => {
+    const pet = makePet({ lastLevelUpAt: null });
+    expect(pickScene(pet, now)).toBe("idle-baseline");
+  });
+
+  it("Bug C: level-up scene is NOT shown for a dead pet even within window", () => {
+    const justNow = new Date(now - 500).toISOString();
+    const pet = makePet({
+      lastLevelUpAt: justNow,
+      diedAt: new Date().toISOString(),
+      tombstone: { diedAt: new Date().toISOString(), cause: "neglect", finalLevel: 5, finalXp: 0 },
+    });
+    // Death takes priority over level-up
+    expect(pickScene(pet, now)).toBe("death");
+  });
+
+  it("Bug C: LEVEL_UP_WINDOW_MS is 3000", () => {
+    expect(LEVEL_UP_WINDOW_MS).toBe(3000);
+  });
+
+  it("Bug C: at exactly LEVEL_UP_WINDOW_MS elapsed the window has expired", () => {
+    const exactlyExpired = new Date(now - LEVEL_UP_WINDOW_MS).toISOString();
+    const pet = makePet({ lastLevelUpAt: exactlyExpired });
+    // elapsed = LEVEL_UP_WINDOW_MS → not < LEVEL_UP_WINDOW_MS → expired
     expect(pickScene(pet, now)).toBe("idle-baseline");
   });
 });
