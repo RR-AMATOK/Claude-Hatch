@@ -789,6 +789,40 @@ export function applyEyeBlink(
 }
 
 // ---------------------------------------------------------------------------
+// XP bar fill helper (DEC-020)
+// ---------------------------------------------------------------------------
+
+/**
+ * Compute the XP progress bar fill for a pet within their current level.
+ *
+ * Uses the DEC-020 cumulative XP curve (`xpToNext(L) = floor(2 · L^φ)`).
+ * Returns the number of filled cells (0–14) in the 14-cell bar.
+ *
+ * Special cases:
+ *   - Dead pet → 0 filled cells (hollow bar)
+ *   - Ascendant (L ≥ LEVEL_CAP) → 14 filled cells (full bar)
+ *   - Otherwise → `floor(((xp - floorXp) / span) * 14)`, clamped to [0, 14]
+ *
+ * Both `renderHudRow` (narrow tier) and `renderHudLeftGroup` (standard/wide
+ * tier) use this — keep one source of truth for the bar formula. Do NOT
+ * inline the legacy `xp % 1000 / 1000` stop-gap; that is the DEC-020 sawtooth
+ * bug fixed in this commit.
+ */
+function xpBarFill(pet: Pet): { filled: number; empty: number } {
+  if (pet.diedAt !== null) return { filled: 0, empty: 14 };
+  const derivedLevel = deriveLevel(pet.xp);
+  if (derivedLevel >= LEVEL_CAP) return { filled: 14, empty: 0 };
+
+  const t = cumulativeTable();
+  const floorXp = t[derivedLevel] ?? 0;
+  const nextXp = t[derivedLevel + 1] ?? floorXp + 1;
+  const span = Math.max(1, nextXp - floorXp);
+  const ratio = Math.min(1, Math.max(0, (pet.xp - floorXp) / span));
+  const filled = Math.floor(ratio * 14);
+  return { filled, empty: 14 - filled };
+}
+
+// ---------------------------------------------------------------------------
 // HUD row rendering
 // ---------------------------------------------------------------------------
 
@@ -808,6 +842,9 @@ export function renderHudRow(
   const isAscendant = derivedLevel >= LEVEL_CAP;
   const isDead = pet.diedAt !== null;
 
+  // XP bar fill — single source of truth via helper (DEC-020)
+  const { filled, empty } = xpBarFill(pet);
+
   // Name: up to 12 chars
   const rawName = pet.name ?? pet.eggType;
   let nameStr = rawName.slice(0, 12).padEnd(12, " ");
@@ -826,26 +863,11 @@ export function renderHudRow(
   }
 
   // XP bar (14 inner cells + 2 brackets = 16 total)
-  let xpBarStr: string;
-  if (isDead) {
-    xpBarStr = "[\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591]"; // hollow
-  } else if (isAscendant) {
-    xpBarStr = "[\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588]"; // full
-  } else {
-    // Intra-level progress ratio, derived from the authoritative xp value.
-    const t = cumulativeTable();
-    const floorXp = t[derivedLevel] ?? 0;
-    const nextXp = t[derivedLevel + 1] ?? floorXp + 1;
-    const span = Math.max(1, nextXp - floorXp);
-    const ratio = Math.min(1, Math.max(0, (pet.xp - floorXp) / span));
-    const filled = Math.floor(ratio * 14);
-    const empty = 14 - filled;
-    xpBarStr =
-      "[" +
-      "\u2588".repeat(filled) +
-      "\u2591".repeat(empty) +
-      "]";
-  }
+  const xpBarStr =
+    "[" +
+    "\u2588".repeat(filled) +
+    "\u2591".repeat(empty) +
+    "]";
 
   // XP text
   let xpText: string;
@@ -884,17 +906,10 @@ export function renderHudRow(
   const levelC = colorize(levelStr, accentLevelToken, mode);
 
   // XP bar: filled cells use species accent, empty cells use surface-muted
-  const filledCount =
-    isDead || isAscendant
-      ? isAscendant
-        ? 14
-        : 0
-      : Math.floor(Math.min(1, (pet.xp % 1000) / 1000) * 14);
-  const emptyCount = 14 - filledCount;
   const xpBarColored =
     "[" +
-    colorize("\u2588".repeat(filledCount), speciesAccent, mode) +
-    colorize("\u2591".repeat(emptyCount), surfaceMutedToken, mode) +
+    colorize("\u2588".repeat(filled), speciesAccent, mode) +
+    colorize("\u2591".repeat(empty), surfaceMutedToken, mode) +
     "]";
 
   const xpTextC = colorize(xpText, textSecToken, mode);
@@ -1013,6 +1028,9 @@ function renderHudLeftGroup(
   const isAsc = derivedLevel >= LEVEL_CAP;
   const isDead = pet.diedAt !== null;
 
+  // XP bar fill — single source of truth via helper (DEC-020)
+  const { filled, empty } = xpBarFill(pet);
+
   // Name: compact variant — no right-padding (spec §5.4b)
   const rawName = pet.name ?? pet.eggType;
   let nameStr = rawName.slice(0, 12);
@@ -1030,21 +1048,7 @@ function renderHudLeftGroup(
   }
 
   // XP bar (14 inner + 2 brackets = 16 total)
-  let xpBarStr: string;
-  if (isDead) {
-    xpBarStr = "[\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591\u2591]";
-  } else if (isAsc) {
-    xpBarStr = "[\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588]";
-  } else {
-    const t = cumulativeTable();
-    const floorXp = t[derivedLevel] ?? 0;
-    const nextXp = t[derivedLevel + 1] ?? floorXp + 1;
-    const span = Math.max(1, nextXp - floorXp);
-    const ratio = Math.min(1, Math.max(0, (pet.xp - floorXp) / span));
-    const filled = Math.floor(ratio * 14);
-    const empty = 14 - filled;
-    xpBarStr = "[" + "\u2588".repeat(filled) + "\u2591".repeat(empty) + "]";
-  }
+  const xpBarStr = "[" + "\u2588".repeat(filled) + "\u2591".repeat(empty) + "]";
 
   // XP text (compact — just the raw number, no padding)
   let xpText: string;
@@ -1073,15 +1077,10 @@ function renderHudLeftGroup(
   const nameC = nameStr;
   const levelC = colorize(levelStr, accentLevelToken, mode);
 
-  const filledCount =
-    isDead || isAsc
-      ? isAsc ? 14 : 0
-      : Math.floor(Math.min(1, (pet.xp % 1000) / 1000) * 14);
-  const emptyCount = 14 - filledCount;
   const xpBarColored =
     "[" +
-    colorize("\u2588".repeat(filledCount), speciesAccent, mode) +
-    colorize("\u2591".repeat(emptyCount), surfaceMutedToken, mode) +
+    colorize("\u2588".repeat(filled), speciesAccent, mode) +
+    colorize("\u2591".repeat(empty), surfaceMutedToken, mode) +
     "]";
 
   const xpTextC = colorize(xpText, textSecToken, mode);
