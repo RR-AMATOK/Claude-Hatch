@@ -107,8 +107,11 @@ function cumulativeTable(): number[] {
 /**
  * Derive level from cumulative XP. Authoritative over the stored `pet.level`
  * field — any drift between the two resolves in favour of the xp-derived value.
+ *
+ * Exported so App.tsx (TUI) can share the DEC-020-correct implementation
+ * instead of carrying a local stale copy.
  */
-function deriveLevel(xp: number): number {
+export function deriveLevel(xp: number): number {
   if (xp < 0) return 1;
   const t = cumulativeTable();
   let lo = 1;
