@@ -46,6 +46,58 @@ function prodHome(): string {
   return DEFAULT_PROD_HOME;
 }
 
+/**
+ * Heuristic: are we running as an installed binary (npm install -g, npx,
+ * pnpm/yarn global, or `npm link`) rather than from a source checkout?
+ *
+ * Two signals, either is sufficient:
+ *   1. argv[1] is a bin shim: `<prefix>/bin/glyphling` — covers `npm install
+ *      -g`, `npm link`, and most npx invocations where Node sees the shim
+ *      path rather than the symlink target.
+ *   2. argv[1] resolves to a path under `node_modules/glyphling/` — covers
+ *      pnpm / yarn global layouts and direct `node .../bin.js` invocations
+ *      from inside an installed package.
+ *
+ * Dev runs (`npm run dev/demo/test`) set GLYPHLING_HOME explicitly and never
+ * reach this branch. Source runs (`node dist/src/bin.js` from the repo)
+ * match neither signal and correctly fall through to the DEC-008 guard.
+ *
+ * Treated as an implicit `NODE_ENV=production` signal so `npm install -g
+ * glyphling && glyphling` works out of the box without requiring users to
+ * export NODE_ENV themselves.
+ */
+function isGlobalInstall(): boolean {
+  const entry = process.argv[1];
+  if (!entry) return false;
+  const sep = path.sep;
+  // Bin-shim marker: path ends in `<sep>bin<sep>glyphling` (no extension on
+  // POSIX; npm adds .cmd on Windows — match both).
+  if (
+    entry.endsWith(`${sep}bin${sep}glyphling`) ||
+    entry.endsWith(`${sep}bin${sep}glyphling.cmd`)
+  ) {
+    return true;
+  }
+  // Installed-package marker anywhere in the path (handles pnpm/yarn global
+  // + realpath-resolved invocations).
+  if (entry.includes(`${sep}node_modules${sep}glyphling${sep}`)) {
+    return true;
+  }
+  // Also check the realpath — symlinks through a user's global prefix bin
+  // dir can end up pointing directly at dist/src/bin.js inside an installed
+  // package. If realpath resolution fails (missing file / permission), fall
+  // through to the source-run behavior.
+  try {
+    const real = fs.realpathSync(entry);
+    if (real.includes(`${sep}node_modules${sep}glyphling${sep}`)) {
+      return true;
+    }
+  } catch {
+    // ignore
+  }
+  return false;
+}
+
 // ---------------------------------------------------------------------------
 // Guard
 // ---------------------------------------------------------------------------
@@ -139,12 +191,18 @@ export function resolveStateHome(
   env: Record<string, string | undefined> = process.env,
   nodeEnv: string = process.env["NODE_ENV"] ?? "development"
 ): Config {
+  // Running from an installed binary implies production intent, even when the
+  // host shell has no NODE_ENV exported. Without this, `npm install -g
+  // glyphling && glyphling` would hit the DEC-008 guard and refuse to start.
+  const effectiveEnv =
+    nodeEnv === "production" || isGlobalInstall() ? "production" : nodeEnv;
+
   let stateHome: string;
 
   if (env["GLYPHLING_HOME"]) {
     // Explicit override — always accepted regardless of NODE_ENV.
     stateHome = path.resolve(env["GLYPHLING_HOME"]);
-  } else if (nodeEnv === "production") {
+  } else if (effectiveEnv === "production") {
     // Production default: ~/.claude/glyphling/
     stateHome = prodHome();
   } else {
@@ -159,7 +217,7 @@ export function resolveStateHome(
   }
 
   // Apply the non-prod guard even when GLYPHLING_HOME was explicitly set.
-  assertNonProdGuard(stateHome, nodeEnv);
+  assertNonProdGuard(stateHome, effectiveEnv);
 
   return buildConfig(stateHome);
 }

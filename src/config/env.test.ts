@@ -108,6 +108,59 @@ describe("resolveStateHome — DEC-008 guard", () => {
       )
     ).not.toThrow();
   });
+
+  // Regression: `npm install -g glyphling && glyphling` must not hit the
+  // DEC-008 guard just because the user's shell has no NODE_ENV set.
+  // An installed binary lives under node_modules/glyphling/ and is treated
+  // as an implicit production context.
+  it("treats an install under node_modules/glyphling/ as production even without NODE_ENV", () => {
+    const origArgv1 = process.argv[1];
+    process.argv[1] = path.join(
+      "/opt/homebrew/lib/node_modules/glyphling/dist/src/bin.js"
+    );
+    try {
+      const config = resolveStateHome({}, "development");
+      expect(config.stateHome).toBe(path.resolve(claudeGlyphling));
+    } finally {
+      if (origArgv1 === undefined) {
+        delete process.argv[1];
+      } else {
+        process.argv[1] = origArgv1;
+      }
+    }
+  });
+
+  it("source-checkout runs (no node_modules/glyphling/ in argv) still require GLYPHLING_HOME", () => {
+    const origArgv1 = process.argv[1];
+    process.argv[1] = "/Users/dev/glyphling/dist/src/bin.js";
+    try {
+      expect(() => resolveStateHome({}, "development")).toThrow(
+        "GLYPHLING_HOME is not set"
+      );
+    } finally {
+      if (origArgv1 === undefined) {
+        delete process.argv[1];
+      } else {
+        process.argv[1] = origArgv1;
+      }
+    }
+  });
+
+  it("treats `npm link` bin-shim paths as production (argv[1] ends in /bin/glyphling)", () => {
+    const origArgv1 = process.argv[1];
+    // Typical shape when invoked as `glyphling` from a globally-linked prefix.
+    process.argv[1] = "/opt/homebrew/bin/glyphling";
+    try {
+      const config = resolveStateHome({}, "development");
+      expect(config.stateHome).toBe(path.resolve(claudeGlyphling));
+    } finally {
+      if (origArgv1 === undefined) {
+        delete process.argv[1];
+      } else {
+        process.argv[1] = origArgv1;
+      }
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
