@@ -15,11 +15,12 @@
  *   - state.json schema-invalid → print FALLBACK_OUTPUT, exit 0
  */
 
-import { readState } from "../state/reader.js";
+import { readStateOrError } from "../state/reader.js";
 import type { Config } from "../config/env.js";
 import type { Pet } from "../state/schema.js";
 import {
   FALLBACK_OUTPUT,
+  STALE_OUTPUT,
   REFRESH_MS,
   detectColorMode,
   pickScene,
@@ -189,7 +190,14 @@ export async function renderOnce(config: Config): Promise<number> {
   // Step 2: Read state.json (lock-free per DEC-010/DEC-016)
   let state;
   try {
-    state = await readState(config);
+    const result = await readStateOrError(config);
+    if (result.parseError) {
+      // TODO-038: state.json exists but failed schema/parse validation.
+      // Emit a distinct fallback so the user can tell it's stale, not missing.
+      process.stdout.write(STALE_OUTPUT + "\n");
+      return 0;
+    }
+    state = result.state;
   } catch {
     // Unreadable state — degrade gracefully
     process.stdout.write(FALLBACK_OUTPUT + "\n");

@@ -32,6 +32,7 @@ import {
   watchState,
   checkRecoveryNeeded,
   type StateChangeListener,
+  type WatchValidationError,
 } from "./persistence.js";
 
 // ---------------------------------------------------------------------------
@@ -71,6 +72,14 @@ export class StateStore {
    */
   private _integrityWarning: string | null = null;
 
+  /**
+   * TODO-038: set when the file-watcher rejects a state.json write due to
+   * parse/schema validation failure. Cleared on the next successful read.
+   * Shape is discriminated so the renderer can distinguish it from the
+   * DEC-018 chain-break banner.
+   */
+  private _validationWarning: WatchValidationError | null = null;
+
   // ---------------------------------------------------------------------------
   // Initialisation
   // ---------------------------------------------------------------------------
@@ -94,11 +103,19 @@ export class StateStore {
       this.notifySubscribers();
     }
 
-    // Start file-watch for cross-instance sync
-    this._unwatch = watchState(config, (newState) => {
-      this._state = newState;
-      this.notifySubscribers();
-    });
+    // Start file-watch for cross-instance sync.
+    // TODO-038: the onError callback surfaces parse/validation failures in the TUI.
+    this._unwatch = watchState(
+      config,
+      (newState) => {
+        this._state = newState;
+        this.clearValidationWarning();
+        this.notifySubscribers();
+      },
+      (err) => {
+        this.setValidationWarning(err);
+      }
+    );
   }
 
   /**
@@ -130,6 +147,37 @@ export class StateStore {
    */
   integrityWarning(): string | null {
     return this._integrityWarning;
+  }
+
+  /**
+   * TODO-038: Returns the current validation warning set by the file-watcher
+   * when a state.json write fails schema/parse validation.
+   * Null when no rejection is pending (state is valid).
+   */
+  validationWarning(): WatchValidationError | null {
+    return this._validationWarning;
+  }
+
+  /**
+   * TODO-038: Called by the file-watcher on parse/validation failure.
+   * Sets the warning and notifies subscribers so the TUI re-renders.
+   * Internal — called from the watchState error callback wired in boot().
+   */
+  setValidationWarning(warning: WatchValidationError): void {
+    this._validationWarning = warning;
+    this.notifySubscribers();
+  }
+
+  /**
+   * TODO-038: Called when a valid state.json is successfully read by the
+   * watcher. Clears any pending validation warning.
+   * Internal — called from the watchState success path in boot().
+   */
+  clearValidationWarning(): void {
+    if (this._validationWarning !== null) {
+      this._validationWarning = null;
+      this.notifySubscribers();
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -320,5 +368,5 @@ export class StateStore {
 // Re-export persistence helpers for convenience
 // ---------------------------------------------------------------------------
 
-export type { StateChangeListener };
+export type { StateChangeListener, WatchValidationError };
 export { readState, writeState, appendEvent, watchState };

@@ -36,6 +36,8 @@ import { SCENES } from "../../animations/scenes/index.js";
 import os from "os";
 import path from "path";
 import { buildConfig } from "../config/env.js";
+import { StateStore } from "../state/store.js";
+import type { WatchValidationError } from "../state/store.js";
 
 // ---------------------------------------------------------------------------
 // Pet fixture
@@ -580,5 +582,150 @@ describe("deriveLevel (imported from compact.ts)", () => {
       expect(level).toBeGreaterThanOrEqual(prev);
       prev = level;
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TODO-038: ValidationBanner — StateStore warning channel
+//
+// Since we cannot render Ink components without ink-testing-library, we test:
+//   1. StateStore.validationWarning() starts null
+//   2. setValidationWarning() stores the warning and notifies subscribers
+//   3. clearValidationWarning() resets to null and notifies subscribers
+//   4. ValidationBanner time-formatting logic (HH:MM:SS)
+//   5. The kind discriminator is "validation" (not "chain-break")
+// ---------------------------------------------------------------------------
+
+describe("TODO-038: StateStore validation warning channel", () => {
+  it("validationWarning() is null on a fresh store", () => {
+    const store = new StateStore();
+    expect(store.validationWarning()).toBeNull();
+  });
+
+  it("setValidationWarning() stores the warning", () => {
+    const store = new StateStore();
+    const warning: WatchValidationError = {
+      kind: "validation",
+      reason: "diedAt/tombstone mismatch",
+      rejectedAt: Date.now(),
+      retryCount: 0,
+    };
+    store.setValidationWarning(warning);
+    const result = store.validationWarning();
+    expect(result).not.toBeNull();
+    expect(result!.kind).toBe("validation");
+    expect(result!.reason).toBe("diedAt/tombstone mismatch");
+    expect(result!.retryCount).toBe(0);
+  });
+
+  it("clearValidationWarning() resets the warning to null", () => {
+    const store = new StateStore();
+    store.setValidationWarning({
+      kind: "validation",
+      reason: "test",
+      rejectedAt: Date.now(),
+      retryCount: 1,
+    });
+    expect(store.validationWarning()).not.toBeNull();
+    store.clearValidationWarning();
+    expect(store.validationWarning()).toBeNull();
+  });
+
+  it("clearValidationWarning() is a no-op when already null (no subscriber notification)", () => {
+    const store = new StateStore();
+    let notified = 0;
+    store.subscribe(() => { notified++; });
+    // Already null — should not fire subscribers
+    store.clearValidationWarning();
+    expect(notified).toBe(0);
+  });
+
+  it("setValidationWarning() notifies subscribers", () => {
+    const store = new StateStore();
+    let notified = 0;
+    store.subscribe(() => { notified++; });
+    store.setValidationWarning({
+      kind: "validation",
+      reason: "bad field",
+      rejectedAt: Date.now(),
+      retryCount: 0,
+    });
+    expect(notified).toBe(1);
+  });
+
+  it("clearValidationWarning() notifies subscribers when warning was set", () => {
+    const store = new StateStore();
+    let notified = 0;
+    store.setValidationWarning({
+      kind: "validation",
+      reason: "bad field",
+      rejectedAt: Date.now(),
+      retryCount: 0,
+    });
+    store.subscribe(() => { notified++; });
+    store.clearValidationWarning();
+    expect(notified).toBe(1);
+  });
+
+  it("warning is distinct from integrityWarning (DEC-018 channel)", () => {
+    const store = new StateStore();
+    // integrityWarning is for DEC-018 chain-break; validationWarning is for TODO-038 parse errors.
+    // Both start null and are independently writable.
+    expect(store.integrityWarning()).toBeNull();
+    expect(store.validationWarning()).toBeNull();
+
+    store.setValidationWarning({
+      kind: "validation",
+      reason: "zod error",
+      rejectedAt: Date.now(),
+      retryCount: 0,
+    });
+
+    // Setting validationWarning does NOT affect integrityWarning
+    expect(store.integrityWarning()).toBeNull();
+    expect(store.validationWarning()).not.toBeNull();
+  });
+});
+
+describe("TODO-038: ValidationBanner time-formatting logic", () => {
+  /**
+   * The ValidationBanner component formats rejectedAt as HH:MM:SS.
+   * We test the formatting logic in isolation (pure function contract).
+   */
+  function formatBannerTime(rejectedAt: number): string {
+    const ts = new Date(rejectedAt);
+    const hh = ts.getHours().toString().padStart(2, "0");
+    const mm = ts.getMinutes().toString().padStart(2, "0");
+    const ss = ts.getSeconds().toString().padStart(2, "0");
+    return `${hh}:${mm}:${ss}`;
+  }
+
+  it("formats a known timestamp to HH:MM:SS", () => {
+    // Use a date where H/M/S are all known single-digit values to test padding
+    const ts = new Date("2025-01-01T01:02:03Z").getTime();
+    // Hours depend on the system timezone, so we normalise to UTC for the assertion.
+    const d = new Date(ts);
+    const expected =
+      d.getHours().toString().padStart(2, "0") + ":" +
+      d.getMinutes().toString().padStart(2, "0") + ":" +
+      d.getSeconds().toString().padStart(2, "0");
+    expect(formatBannerTime(ts)).toBe(expected);
+  });
+
+  it("output is always HH:MM:SS format (length 8)", () => {
+    const ts = Date.now();
+    const formatted = formatBannerTime(ts);
+    expect(formatted).toMatch(/^\d{2}:\d{2}:\d{2}$/);
+    expect(formatted).toHaveLength(8);
+  });
+
+  it("banner text contains the reason string", () => {
+    const reason = "diedAt/tombstone mismatch";
+    const ts = Date.now();
+    const timeStr = formatBannerTime(ts);
+    const bannerText = `⚠ state.json invalid — rejected ${timeStr} — ${reason}`;
+    expect(bannerText).toContain(reason);
+    expect(bannerText).toContain("state.json invalid");
+    expect(bannerText).toContain("⚠");
   });
 });

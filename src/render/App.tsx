@@ -39,6 +39,7 @@ import {
 import { LEVEL_CAP, levelFromCumXp, cumulativeXpForLevel } from "../xp/engine.js";
 import { useAnimation } from "./animation.js";
 import { glyphlingStore, bootStore, useGlyphlingStore } from "./useGlyphlingStore.js";
+import type { WatchValidationError } from "../state/store.js";
 import { useEventLog, formatRelativeTime, type LogEntry } from "./useEventLog.js";
 import { parseInput } from "../commands/repl.js";
 import {
@@ -406,6 +407,30 @@ function IntegrityBanner({ warning }: { warning: string }): React.ReactElement {
 }
 
 // ---------------------------------------------------------------------------
+// ValidationBanner — TODO-038: state.json schema rejection banner
+//
+// Appears above HudBar when the file-watcher rejects a state.json write.
+// Format: ⚠ state.json invalid — rejected HH:MM:SS — <reason>
+// Disappears when the next valid state.json is successfully read.
+// ---------------------------------------------------------------------------
+
+function ValidationBanner({ warning }: { warning: WatchValidationError }): React.ReactElement {
+  const ts = new Date(warning.rejectedAt);
+  const hh = ts.getHours().toString().padStart(2, "0");
+  const mm = ts.getMinutes().toString().padStart(2, "0");
+  const ss = ts.getSeconds().toString().padStart(2, "0");
+  const timeStr = `${hh}:${mm}:${ss}`;
+
+  return (
+    <Box paddingX={1} marginBottom={1}>
+      <Text color="red" dimColor>
+        {`⚠ state.json invalid — rejected ${timeStr} — ${warning.reason}`}
+      </Text>
+    </Box>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // AppProps / App — root
 // ---------------------------------------------------------------------------
 
@@ -507,6 +532,7 @@ export function App({ config }: AppProps): React.ReactElement {
   }
 
   const integrityWarning = glyphlingStore.integrityWarning();
+  const validationWarning = glyphlingStore.validationWarning();
 
   let activePet: Pet | undefined;
   if (state !== null) {
@@ -518,6 +544,9 @@ export function App({ config }: AppProps): React.ReactElement {
 
   return (
     <Box flexDirection="column" padding={1}>
+      {validationWarning !== null && (
+        <ValidationBanner warning={validationWarning} />
+      )}
       {integrityWarning !== null && (
         <IntegrityBanner warning={integrityWarning} />
       )}

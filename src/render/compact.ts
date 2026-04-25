@@ -1201,3 +1201,10 @@ export function assembleWideOutput(
 
 /** Single-row neutral fallback when state is missing/invalid (exit 0). */
 export const FALLBACK_OUTPUT = "glyphling \u00b7 no pet";
+
+/**
+ * TODO-038: Single-row fallback emitted when state.json exists but fails
+ * schema/parse validation. Distinct from FALLBACK_OUTPUT so the user can
+ * tell the file is present but corrupt, rather than simply not yet created.
+ */
+export const STALE_OUTPUT = "glyphling \u00b7 state stale";
