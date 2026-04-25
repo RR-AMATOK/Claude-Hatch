@@ -75,6 +75,9 @@ function makePet(level: number): Pet {
     languageExposure: {},
     dailyCaps: {},
     lastLevelUpAt: null,
+    lastPlayedAt: null,
+    lastHatchedAt: null,
+    lastEvolvedAt: null,
   };
 }
 

@@ -220,6 +220,9 @@ export function adopt(
     languageExposure: {},
     dailyCaps: {},
     lastLevelUpAt: null,
+    lastPlayedAt: null,
+    lastHatchedAt: null,
+    lastEvolvedAt: null,
   };
 
   const events: GlyphlingEvent[] = [];

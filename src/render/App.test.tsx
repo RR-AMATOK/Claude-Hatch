@@ -77,6 +77,9 @@ function makePet(overrides: Partial<Pet> = {}): Pet {
     languageExposure: {},
     dailyCaps: {},
     lastLevelUpAt: null,
+    lastPlayedAt: null,
+    lastHatchedAt: null,
+    lastEvolvedAt: null,
     ...overrides,
   };
 }
@@ -404,8 +407,10 @@ describe("useAnimation wiring — scene selection contract (PetView consumers)",
   });
 
   it("selectScene returns idle-baseline for a healthy baseline-personality pet", () => {
+    // Pass a nowMs far in the future so all one-shot windows have expired
+    const nowMs = Date.now() + 60_000;
     const pet = makePet({ accumulatedNeglectSeconds: 0 });
-    const sceneId = selectScene(pet);
+    const sceneId = selectScene(pet, nowMs);
     // Friendly dominant → pickIdleVariant → idle-baseline (Friendly < chipper threshold)
     expect(sceneId).toBe("idle-baseline");
   });
@@ -424,12 +429,13 @@ describe("useAnimation wiring — scene selection contract (PetView consumers)",
   });
 
   it("selectScene returns sick when accumulatedNeglectSeconds >= 86400", () => {
+    // sick overrides one-shots, so no need to expire windows
     const pet = makePet({ accumulatedNeglectSeconds: 86400 });
     expect(selectScene(pet)).toBe("sick");
   });
 
   it("selectScene returns sick-worse when accumulatedNeglectSeconds >= DYING_THRESHOLD", () => {
-    // DYING_THRESHOLD = 3d - 12h = 216000s
+    // DYING_THRESHOLD = 3d - 12h = 216000s; sick-worse overrides one-shots
     const pet = makePet({ accumulatedNeglectSeconds: 216000 });
     expect(selectScene(pet)).toBe("sick-worse");
   });
@@ -481,12 +487,62 @@ describe("useAnimation wiring — scene selection contract (PetView consumers)",
   it("frame.rows array from a healthy pet scene is non-empty", () => {
     // Verify the SCENES registry returns frames with rows for a baseline pet.
     // We call selectScene + look up the scene directly (no React needed).
+    // Pass nowMs far in future so all one-shot windows have expired.
+    const nowMs = Date.now() + 60_000;
     const pet = makePet();
-    const sceneId = selectScene(pet);
+    const sceneId = selectScene(pet, nowMs);
     const scene = SCENES[sceneId];
     expect(scene).toBeDefined();
     expect(scene.frames.length).toBeGreaterThan(0);
     expect(scene.frames[0]!.rows.length).toBeGreaterThan(0);
+  });
+
+  // ---------------------------------------------------------------------------
+  // TODO-037: one-shot scene dispatch wiring (PetView scene selection)
+  // ---------------------------------------------------------------------------
+
+  it("pet with recent lastFedAt → selectScene returns eat-feast (higher priority than eat-small)", () => {
+    const now = Date.now();
+    const pet = makePet({ lastFedAt: new Date(now - 200).toISOString() });
+    // eat-feast (2500ms window) has higher priority and covers the recent feed
+    expect(selectScene(pet, now)).toBe("eat-feast");
+  });
+
+  it("pet with recent lastLevelUpAt → selectScene returns levelup-flash", () => {
+    const now = Date.now();
+    const pet = makePet({ lastLevelUpAt: new Date(now - 200).toISOString() });
+    expect(selectScene(pet, now)).toBe("levelup-flash");
+  });
+
+  it("pet with recent lastPlayedAt (no recent feed) → selectScene returns play-chase", () => {
+    const now = Date.now();
+    // Use a lastFedAt far enough in the past that eat windows have expired
+    const pet = makePet({
+      lastPlayedAt: new Date(now - 100).toISOString(),
+      lastFedAt: new Date(now - 30_000).toISOString(),  // 30s ago → all eat windows expired
+    });
+    expect(selectScene(pet, now)).toBe("play-chase");
+  });
+
+  it("pet sick + recent lastFedAt → selectScene returns sick (sick beats eat)", () => {
+    const now = Date.now();
+    const pet = makePet({
+      accumulatedNeglectSeconds: 86400,
+      lastFedAt: new Date(now - 100).toISOString(),
+    });
+    expect(selectScene(pet, now)).toBe("sick");
+  });
+
+  it("pet with recent lastHatchedAt → selectScene returns hatch-emerge", () => {
+    const now = Date.now();
+    const pet = makePet({ lastHatchedAt: new Date(now - 100).toISOString() });
+    expect(selectScene(pet, now)).toBe("hatch-emerge");
+  });
+
+  it("pet with recent lastEvolvedAt → selectScene returns evolve-shimmer", () => {
+    const now = Date.now();
+    const pet = makePet({ lastEvolvedAt: new Date(now - 100).toISOString() });
+    expect(selectScene(pet, now)).toBe("evolve-shimmer");
   });
 });
 
