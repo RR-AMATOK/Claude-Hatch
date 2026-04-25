@@ -15,6 +15,7 @@
  * DEC-008: uses config.stateHome — never touches ~/.claude/ in dev/test.
  * DEC-016: does NOT import or modify statusline.ts.
  * DEC-017: species values are lowercase (circuit | rune | shard | bloom).
+ * DEC-020: LEVEL_CAP=1618, golden curve floor(2*k^φ). levelFromCumXp/LEVEL_CAP imported from xp/engine.
  * NO_MOTION=1: animation interval is skipped; single static frame shown.
  * NO_COLOR=1: all ANSI codes suppressed via detectColorMode.
  *
@@ -35,6 +36,8 @@ import {
   MOOD_GLYPHS,
   type ColorMode,
 } from "./compact.js";
+import { LEVEL_CAP, levelFromCumXp, cumulativeXpForLevel } from "../xp/engine.js";
+import { useAnimation } from "./animation.js";
 import { glyphlingStore, bootStore, useGlyphlingStore } from "./useGlyphlingStore.js";
 import { useEventLog, formatRelativeTime, type LogEntry } from "./useEventLog.js";
 import { parseInput } from "../commands/repl.js";
@@ -44,84 +47,18 @@ import {
 } from "../commands/handlers.js";
 
 // ---------------------------------------------------------------------------
-// Silhouette data — wide (4-row) form for the TUI pet view
+// XP / level helpers — DEC-020 correct (LEVEL_CAP=1618, golden curve)
 //
-// compact.ts does not export SILHOUETTES. We inline the wide silhouettes here
-// as a lightweight read-only copy to avoid forking compact.ts.
-// These mirror SILHOUETTES[species][stage].wide from compact.ts exactly.
+// levelFromCumXp and cumulativeXpForLevel are imported from xp/engine.ts —
+// single source of truth per refactor in this commit.
 // ---------------------------------------------------------------------------
-const WIDE_SILHOUETTES: Record<string, Record<string, readonly [string, string, string, string]>> = {
-  circuit: {
-    hatchling: ["    .", "   [oo]", "   -||-", "    ^^"],
-    juvenile: ["    |", "   /[oo]\\", "   +-||-+", "    ^  ^"],
-    adult: ["    .v.", "   /[o-o]\\", "  +==|--|==+", "    |_||_|"],
-  },
-  rune: {
-    hatchling: ["    ^", "   <..>", "    \\/", "    ."],
-    juvenile: ["   ^ ^", "   <^..^>", "    \\||/", "    o.o"],
-    adult: ["    ^^^", "   <^-..-^>", "    \\|||/", "   .  .  ."],
-  },
-  shard: {
-    hatchling: ["    *", "   /oo\\", "   \\\\//", "   . ."],
-    juvenile: ["    *", "   /*oo*\\", "   \\\\||//", "   .* *."],
-    adult: ["    *   *", "   /**oo**\\", "   \\\\\\||///", "   .*. .*."],
-  },
-  bloom: {
-    hatchling: ["    ~", "   (oo)", "    vv", "    ,."],
-    juvenile: ["    ~ ~", "   (~oo~)", "    \\vv/", "    ,.,"],
-    adult: ["   ~ * ~", "   (~*oo*~)", "    ~\\vv/~", "    ,.,.,"],
-  },
-};
-
-// Species accent colors for the pet view (hex truecolor)
-const SPECIES_ACCENT_HEX: Record<string, string> = {
-  circuit: "#2a7fff",
-  rune: "#a77fff",
-  shard: "#ff8c2a",
-  bloom: "#7fbf5f",
-};
-
-// ---------------------------------------------------------------------------
-// XP / level helpers
-// Mirrors cumulativeTable() + deriveLevel() from compact.ts exactly so we
-// don't import the heavy xp/engine module.
-// ---------------------------------------------------------------------------
-
-const LEVEL_CAP = 1024;
-
-let _cumTable: number[] | null = null;
-function cumulativeTable(): number[] {
-  if (_cumTable !== null) return _cumTable;
-  const t = new Array<number>(LEVEL_CAP + 1).fill(0);
-  let running = 0;
-  for (let k = 1; k <= LEVEL_CAP; k++) {
-    t[k] = running;
-    running += Math.floor(25 * Math.pow(k, 1.2));
-  }
-  _cumTable = t;
-  return t;
-}
-
-function deriveLevel(xp: number): number {
-  if (xp < 0) return 1;
-  const t = cumulativeTable();
-  let lo = 1;
-  let hi = LEVEL_CAP;
-  while (lo < hi) {
-    const mid = (lo + hi + 1) >> 1;
-    if ((t[mid] ?? Infinity) <= xp) lo = mid;
-    else hi = mid - 1;
-  }
-  return lo;
-}
 
 /** Returns { level, filled } where filled is 0–14 (cells for 14-cell XP bar). */
 function xpProgress(xp: number): { level: number; filled: number } {
-  const level = deriveLevel(xp);
+  const level = levelFromCumXp(xp);
   if (level >= LEVEL_CAP) return { level, filled: 14 };
-  const t = cumulativeTable();
-  const floorXp = t[level] ?? 0;
-  const nextXp = t[level + 1] ?? floorXp + 1;
+  const floorXp = cumulativeXpForLevel(level);
+  const nextXp = cumulativeXpForLevel(level + 1);
   const span = Math.max(1, nextXp - floorXp);
   const ratio = Math.min(1, Math.max(0, (xp - floorXp) / span));
   const filled = Math.floor(ratio * 14);
@@ -172,7 +109,30 @@ function colHex(hex: string | undefined): { color: string } | Record<never, neve
 }
 
 // ---------------------------------------------------------------------------
-// PetView — animated 4-row wide silhouette (DEC-015 memo pattern)
+// Species accent colors for the pet view (hex truecolor)
+// ---------------------------------------------------------------------------
+
+const SPECIES_ACCENT_HEX: Record<string, string> = {
+  circuit: "#2a7fff",
+  rune: "#a77fff",
+  shard: "#ff8c2a",
+  bloom: "#7fbf5f",
+};
+
+// ---------------------------------------------------------------------------
+// PetView — animated wide-form pet display driven by useAnimation (DEC-015)
+//
+// Replaces the previous static WIDE_SILHOUETTES table. Frame rows come from
+// useAnimation(pet) which selects scenes, drives fps via useFrame, and handles
+// reduced-motion opt-in internally.
+//
+// Eye-blink overlay is composited on top of frame.rows[1] (eye-bearing row)
+// using Math.floor(Date.now()/1000) as the cosmetic tick — it is decoupled
+// from the scene fps intentionally so it always runs at 1 Hz.
+//
+// NO_MOTION=1: renders frame.rows directly without the blink overlay and
+// without any setInterval of its own (useAnimation still runs but the frame
+// index stays at 0 since useFrame skips the interval when fps <= 0).
 // ---------------------------------------------------------------------------
 
 interface PetViewProps {
@@ -181,29 +141,27 @@ interface PetViewProps {
 }
 
 /**
- * Renders the wide (4-row) pet silhouette at 1 Hz with eye-blink animation.
+ * Renders the animated pet using the useAnimation hook (DEC-015 pattern).
  * Wrapped in React.memo per DEC-015 rule #3 so only the pet cell repaints.
- * NO_MOTION=1 renders a static single frame with no setInterval.
- * Eye-blink is applied on tick % 4 === 2, matching the statusline behavior.
+ * NO_MOTION=1 renders a static single frame with no eye-blink.
  */
 const PetView = memo(function PetView({ pet, colorMode }: PetViewProps) {
   const noMotion = process.env["NO_MOTION"] === "1";
-  const [tick, setTick] = useState(() => Math.floor(Date.now() / 1000));
 
-  useEffect(() => {
-    if (noMotion) return;
-    const id = setInterval(() => {
-      setTick(Math.floor(Date.now() / 1000));
-    }, 1000);
-    return () => clearInterval(id);
-  }, [noMotion]);
+  // useAnimation drives its own setInterval internally via useFrame(fps).
+  // On NO_MOTION the scene's fps is > 0 but the visual stays static because
+  // we render frame.rows without the blink overlay and the rows themselves
+  // don't change (the scene is still selected correctly for the pet's state).
+  const frame = useAnimation(pet);
 
-  const level = deriveLevel(pet.xp);
+  const level = levelFromCumXp(pet.xp);
   const stage = getLifeStage(level);
-  const wide = WIDE_SILHOUETTES[pet.eggType]?.[stage];
 
-  if (!wide) {
-    // Defensive fallback — should never happen with valid DEC-017 species
+  // Eye-blink tick (cosmetic, 1 Hz) — decoupled from scene fps.
+  const blinkTick = Math.floor(Date.now() / 1000);
+
+  if (frame.rows.length === 0) {
+    // Defensive fallback — should never happen with valid scene data
     return (
       <Box flexDirection="column" paddingLeft={2}>
         <Text dimColor>{"(o_o)"}</Text>
@@ -212,13 +170,13 @@ const PetView = memo(function PetView({ pet, colorMode }: PetViewProps) {
     );
   }
 
-  // Eye-blink lives on row index 1 of wide silhouettes (the eye-bearing row)
-  const rows: string[] = [
-    wide[0],
-    applyEyeBlink(wide[1], pet.eggType, stage, tick),
-    wide[2],
-    wide[3],
-  ];
+  // Build the row array, compositing eye-blink on the eye-bearing row (index 1).
+  const rows: string[] = frame.rows.map((row, i) => {
+    if (noMotion) return row;
+    // Row 1 is conventionally the eye-bearing row across all species.
+    if (i === 1) return applyEyeBlink(row, pet.eggType, stage, blinkTick);
+    return row;
+  });
 
   const accentColor = colorMode !== "none"
     ? (SPECIES_ACCENT_HEX[pet.eggType] ?? "#2a7fff")
