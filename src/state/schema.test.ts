@@ -303,6 +303,7 @@ describe("parseEvent", () => {
       payload: { tokens: 5000 },
       xpDelta: 10,
       lang: "typescript",
+      prevHash: "",
     };
     const result = parseEvent(event);
     expect(result).not.toBeNull();
@@ -318,6 +319,7 @@ describe("parseEvent", () => {
       source: "manual",
       payload: {},
       xpDelta: 20,
+      prevHash: "",
     };
     expect(parseEvent(event)).not.toBeNull();
   });

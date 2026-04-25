@@ -24,3 +24,22 @@ export function detectLanguage(_dir: string): LanguageId {
   // TODO: Implement in TODO-016 (personality engine uses this at hatch).
   return "unknown";
 }
+
+// ---------------------------------------------------------------------------
+// SEC-008: Safe log helper — prevents ANSI/control-char injection in stderr
+// ---------------------------------------------------------------------------
+
+/**
+ * Escape a potentially attacker-controlled string for safe stderr logging.
+ *
+ * JSON.stringify wraps the value in double-quotes and escapes all control
+ * characters (including ANSI escape sequences). The result is truncated to
+ * 200 characters to prevent log-flooding.
+ *
+ * Usage: `process.stderr.write(\`[glyphling] event id: \${safeForLog(id)}\n\`)`
+ */
+export function safeForLog(value: unknown): string {
+  // JSON.stringify(undefined) returns undefined; coerce to string defensively.
+  const json = JSON.stringify(value);
+  return (json ?? "undefined").slice(0, 200);
+}

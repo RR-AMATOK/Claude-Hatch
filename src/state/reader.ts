@@ -15,6 +15,9 @@ import { validateState, type StateFileV1 } from "./schema.js";
 /** Jitter window for the retry-on-parse-error in the reader protocol (§4.4). */
 const READ_RETRY_JITTER_MS = 20;
 
+/** SEC-003: Refuse state.json reads larger than this (5 MB). */
+const MAX_STATE_BYTES = 5 * 1024 * 1024;
+
 /**
  * Read and validate state.json from disk (§4.4 reader protocol).
  * Returns null if the file does not exist (first-run).
@@ -31,6 +34,20 @@ async function readStateFromPath(
   stateFile: string,
   attempt = 0
 ): Promise<StateFileV1 | null> {
+  // SEC-003: stat first; refuse if too large
+  try {
+    const stat = await fs.promises.stat(stateFile);
+    if (stat.size > MAX_STATE_BYTES) {
+      process.stderr.write(
+        `[glyphling] state.json exceeds size limit (${stat.size} bytes > ${MAX_STATE_BYTES}); refusing to load\n`
+      );
+      return null;
+    }
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw err;
+  }
+
   let raw: string;
   try {
     raw = await fs.promises.readFile(stateFile, "utf8");
@@ -38,6 +55,9 @@ async function readStateFromPath(
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw err;
   }
+
+  // Empty file = same semantics as missing (first-run race or interrupted truncate).
+  if (raw.length === 0) return null;
 
   try {
     const parsed: unknown = JSON.parse(raw);

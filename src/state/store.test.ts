@@ -22,6 +22,7 @@ import { StateStore } from "./store.js";
 import { makeEmptyState, type StateFileV1, type GlyphlingEvent } from "./schema.js";
 import { writeState, readState } from "./persistence.js";
 import { buildConfig } from "../config/env.js";
+import { sha256, canonicalJson } from "../util/hash.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -272,9 +273,10 @@ describe("StateStore — replayEvents", () => {
     const config = await makeTmpConfig();
     await writeState(config, makeEmptyState());
 
-    // Append two events directly to events.jsonl (bypassing the store)
-    const e1 = makeTestEvent({ id: "e1" });
-    const e2 = makeTestEvent({ id: "e2" });
+    // Append two events directly to events.jsonl (bypassing the store).
+    // SEC-002: events must be properly chained (prevHash set correctly).
+    const e1 = makeTestEvent({ id: "e1", prevHash: "" });
+    const e2 = makeTestEvent({ id: "e2", prevHash: sha256(canonicalJson(e1)) });
     await fs.promises.mkdir(config.stateHome, { recursive: true });
     await fs.promises.appendFile(
       config.paths.eventsLog,
@@ -327,12 +329,11 @@ describe("StateStore — materialize", () => {
     const config = await makeTmpConfig();
     await fs.promises.mkdir(config.stateHome, { recursive: true });
 
-    // Write 3 events
-    const events = [
-      makeTestEvent({ id: "m1" }),
-      makeTestEvent({ id: "m2" }),
-      makeTestEvent({ id: "m3" }),
-    ];
+    // Write 3 properly chained events (SEC-002: prevHash must be set correctly)
+    const m1 = makeTestEvent({ id: "m1", prevHash: "" });
+    const m2 = makeTestEvent({ id: "m2", prevHash: sha256(canonicalJson(m1)) });
+    const m3 = makeTestEvent({ id: "m3", prevHash: sha256(canonicalJson(m2)) });
+    const events = [m1, m2, m3];
     const lines = events.map((e) => JSON.stringify(e)).join("\n") + "\n";
     await fs.promises.writeFile(config.paths.eventsLog, lines, "utf8");
 

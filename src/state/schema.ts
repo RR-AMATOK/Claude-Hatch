@@ -32,7 +32,12 @@ export type LanguageId = string;
 // Zod schemas
 // ---------------------------------------------------------------------------
 
-const ISO8601Schema = z.string().min(1);
+const ISO8601Schema = z
+  .string()
+  .min(1)
+  .refine((s) => Number.isFinite(Date.parse(s)), {
+    message: "invalid ISO8601 timestamp",
+  });
 const PetIdSchema = z.string().min(1);
 
 const EggTypeSchema = z.enum(["circuit", "rune", "shard", "bloom"]);
@@ -84,9 +89,9 @@ export const PersonalityVectorSchema = z
 export const TombstoneSchema = z.object({
   diedAt: ISO8601Schema,
   cause: z.enum(["neglect", "unknown"]),
-  finalLevel: z.number().int().min(0),
-  finalXp: z.number().int().min(0),
-  epitaph: z.string().optional(),
+  finalLevel: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER / 2),
+  finalXp: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER / 2),
+  epitaph: z.string().max(256).optional(),
 });
 
 /**
@@ -107,10 +112,14 @@ export type SignalType = z.infer<typeof SignalTypeSchema>;
  * Key: YYYY-MM-DD (UTC). Value: { signal → XP accumulated that day }.
  * Pruned to the last 7 days on each tick.
  */
-export const DailyCapsSchema = z.record(
-  z.string(),
-  z.record(SignalTypeSchema, z.number().int().min(0))
-);
+export const DailyCapsSchema = z
+  .record(
+    z.string(),
+    z.record(SignalTypeSchema, z.number().int().min(0).max(Number.MAX_SAFE_INTEGER / 2))
+  )
+  .refine((obj) => Object.keys(obj).length <= 64, {
+    message: "dailyCaps must not exceed 64 day entries",
+  });
 
 export type DailyCaps = z.infer<typeof DailyCapsSchema>;
 
@@ -119,22 +128,26 @@ export const PetSchema = z
     id: PetIdSchema,
     schemaVersion: z.literal(1),
     eggType: EggTypeSchema,
-    name: z.string().nullable(),
+    name: z.string().max(64).nullable(),
     createdAt: ISO8601Schema,
     hatchedAt: ISO8601Schema.nullable(),
     lastFedAt: ISO8601Schema.nullable(),
     lastInteractionAt: ISO8601Schema,
-    xp: z.number().int().min(0),
+    xp: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER / 2),
     level: z.number().int().min(0).max(1024),
     personality: PersonalityVectorSchema,
-    pauseIntervals: z.array(PauseIntervalSchema),
+    pauseIntervals: z.array(PauseIntervalSchema).max(1000),
     /** DEC-009: accumulated computer-awake seconds since last interaction. */
-    accumulatedNeglectSeconds: z.number().min(0),
+    accumulatedNeglectSeconds: z.number().min(0).max(Number.MAX_SAFE_INTEGER / 2),
     /** DEC-009: timestamp of last 60s lifecycle tick. */
     lastTickAt: ISO8601Schema,
     diedAt: ISO8601Schema.nullable(),
     tombstone: TombstoneSchema.nullable(),
-    languageExposure: z.record(z.string(), z.number().min(0)),
+    languageExposure: z
+      .record(z.string(), z.number().min(0).max(Number.MAX_SAFE_INTEGER / 2))
+      .refine((obj) => Object.keys(obj).length <= 64, {
+        message: "languageExposure must not exceed 64 keys",
+      }),
     /** DEC-018: per-day XP accumulation for daily caps. Pruned to last 7 days. */
     dailyCaps: DailyCapsSchema.default({}),
   })
@@ -180,7 +193,7 @@ export const GlobalsSchema = z.object({
    * DEC-018: Unix ms timestamp of the last appended event.
    * Used for monotonic clock guards. 0 at genesis.
    */
-  lastEventAt: z.number().int().min(0).default(0),
+  lastEventAt: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER / 2).default(0),
 });
 
 export const StateFileV1Schema = z
@@ -258,14 +271,19 @@ export const GlyphlingEventSchema = z.object({
   ts: ISO8601Schema,
   petId: PetIdSchema.nullable(),
   source: z.string(),
-  payload: z.unknown(),
-  xpDelta: z.number().int().optional(),
+  payload: z
+    .unknown()
+    .refine((v) => JSON.stringify(v).length <= 16384, {
+      message: "payload exceeds 16KB",
+    }),
+  xpDelta: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER / 2).optional(),
   lang: z.string().optional(),
   /**
    * DEC-018: SHA-256 hex digest of the previous event's canonical JSON.
    * Empty string for the genesis event (no prior event).
+   * Required — not defaulted so that missing-prevHash events are caught explicitly.
    */
-  prevHash: z.string().default(""),
+  prevHash: z.string(),
   /**
    * DEC-018 Mechanism 2: hash of the matching Claude Code transcript JSONL line.
    * Only present on `tokens.delta` events when produced by the Stop hook adapter.
@@ -283,6 +301,7 @@ export type GlyphlingEvent = z.infer<typeof GlyphlingEventSchema>;
 /** Reason codes for signal.rejected events (DEC-018). */
 export const RejectionReasonSchema = z.enum([
   "chain.broken",
+  "chain.broken.missing-prev",
   "cap.daily",
   "clock.jump.forward",
   "clock.jump.backward",

@@ -73,6 +73,10 @@ interface StatuslineStdin {
  * Read all of stdin, resolving after it closes or after `timeoutMs`.
  * Returns empty string if stdin is not piped (TTY) or times out.
  *
+ * SEC-011: Accumulate as Buffer with a 64 KB cap to prevent memory exhaustion
+ * from a malicious or runaway stdin pipe. Decode to UTF-8 at the end (avoids
+ * partial-multibyte-character corruption from incremental toString calls).
+ *
  * We MUST NOT block on stdin when running manually without a piped input.
  * The 50ms timeout covers the fast statusline tick budget.
  */
@@ -80,20 +84,35 @@ async function readStdin(timeoutMs = 50): Promise<string> {
   // If stdin is a TTY there's nothing to read; skip immediately.
   if (process.stdin.isTTY) return "";
 
+  const MAX_STDIN_BYTES = 64 * 1024; // 64 KB cap
+
   return new Promise<string>((resolve) => {
-    let data = "";
+    const chunks: Buffer[] = [];
+    let totalBytes = 0;
+    let capped = false;
     let settled = false;
 
     const timer = setTimeout(() => {
       if (!settled) {
         settled = true;
         cleanup();
-        resolve(data);
+        resolve(Buffer.concat(chunks).toString("utf8"));
       }
     }, timeoutMs);
 
     const onData = (chunk: Buffer | string) => {
-      data += chunk.toString();
+      if (capped) return;
+      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as string);
+      const remaining = MAX_STDIN_BYTES - totalBytes;
+      if (buf.length >= remaining) {
+        // Cap reached — take only what fits and stop appending
+        chunks.push(buf.slice(0, remaining));
+        totalBytes = MAX_STDIN_BYTES;
+        capped = true;
+      } else {
+        chunks.push(buf);
+        totalBytes += buf.length;
+      }
     };
 
     const onEnd = () => {
@@ -101,7 +120,7 @@ async function readStdin(timeoutMs = 50): Promise<string> {
         settled = true;
         clearTimeout(timer);
         cleanup();
-        resolve(data);
+        resolve(Buffer.concat(chunks).toString("utf8"));
       }
     };
 
@@ -110,7 +129,7 @@ async function readStdin(timeoutMs = 50): Promise<string> {
         settled = true;
         clearTimeout(timer);
         cleanup();
-        resolve(data);
+        resolve(Buffer.concat(chunks).toString("utf8"));
       }
     };
 

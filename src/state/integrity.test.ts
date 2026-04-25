@@ -195,11 +195,11 @@ describe("Mechanism 1 — event-chain hashing", () => {
     expect(result.events.map((e) => e.id)).not.toContain("downstream");
   });
 
-  it("genesis case: prevHash='' when runningHead is '' (no break at first event)", async () => {
+  it("genesis case: prevHash='' is accepted only as the very first event (runningHead='')", async () => {
     const config = await makeTmpConfig();
     await writeState(config, makeEmptyState());
 
-    // Directly write an event with prevHash="" as if from an old version
+    // Directly write a single event with prevHash="" as the genesis event
     const event = makeTestEvent({ id: "genesis-event" });
     const eventWithHash = { ...event, prevHash: "" };
     await fs.promises.mkdir(config.stateHome, { recursive: true });
@@ -209,10 +209,37 @@ describe("Mechanism 1 — event-chain hashing", () => {
       "utf8"
     );
 
-    // Replay from genesis (knownHead="") should not break
+    // Replay from genesis (knownHead="") should not break — it IS the first event
     const result = await replayEvents(config, 0, "");
     expect(result.chainBroken).toBe(false);
     expect(result.events).toHaveLength(1);
+  });
+
+  it("SEC-002: prevHash='' on a follow-up event (after chain established) is a chain break", async () => {
+    const config = await makeTmpConfig();
+    await writeState(config, makeEmptyState());
+
+    // Append a real chained event via appendEvent so eventsHead is set
+    const e1 = makeTestEvent({ id: "chain-sec002-e1" });
+    await appendEvent(config, e1);
+
+    // Now append a second event directly with prevHash="" (simulating tampered/bypassed event)
+    const e2 = makeTestEvent({ id: "chain-sec002-e2" });
+    const e2WithEmptyPrev = { ...e2, prevHash: "" };
+    await fs.promises.appendFile(
+      config.paths.eventsLog,
+      JSON.stringify(e2WithEmptyPrev) + "\n",
+      "utf8"
+    );
+
+    // replayEvents should detect the break: prevHash="" is invalid after the chain is established
+    const result = await replayEvents(config, 0, "");
+    expect(result.chainBroken).toBe(true);
+    expect(result.brokenAtEventId).toBe("chain-sec002-e2");
+    expect(result.reason).toBe("chain.broken.missing-prev");
+    // Only the first event should be included
+    expect(result.events.map((e) => e.id)).toContain("chain-sec002-e1");
+    expect(result.events.map((e) => e.id)).not.toContain("chain-sec002-e2");
   });
 });
 
@@ -482,11 +509,13 @@ describe("Mechanism 4 — monotonic clock guards", () => {
 // ---------------------------------------------------------------------------
 
 describe("Schema migration — backward compatibility", () => {
-  it("existing events without prevHash (default '') do not break the chain at genesis", async () => {
+  it("existing events without prevHash are skipped as unparseable (SEC-002: prevHash is now required)", async () => {
     const config = await makeTmpConfig();
     await writeState(config, makeEmptyState());
 
-    // Simulate old-format events written before DEC-018 (no prevHash field)
+    // Simulate old-format events written before DEC-018 (no prevHash field).
+    // With SEC-002, prevHash is required, so these events fail Zod validation
+    // and are treated as unparseable lines (skipped, no chain break).
     const oldFormatEvent = {
       id: "old-event-001",
       type: "daily.checkin",
@@ -495,7 +524,7 @@ describe("Schema migration — backward compatibility", () => {
       source: "legacy",
       payload: {},
       xpDelta: 20,
-      // No prevHash field
+      // No prevHash field — will fail parseEvent()
     };
     await fs.promises.mkdir(config.stateHome, { recursive: true });
     await fs.promises.appendFile(
@@ -504,12 +533,11 @@ describe("Schema migration — backward compatibility", () => {
       "utf8"
     );
 
-    // Should parse successfully (Zod defaults prevHash to "")
+    // Should skip the event (unparseable) without crashing or flagging chain break
     const result = await replayEvents(config, 0, "");
     expect(result.chainBroken).toBe(false);
-    expect(result.events).toHaveLength(1);
-    // prevHash should default to ""
-    expect(result.events[0]!.prevHash).toBe("");
+    // Event is skipped (prevHash missing = parseEvent returns null)
+    expect(result.events).toHaveLength(0);
   });
 
   it("state.json without eventsHead/lastEventAt is accepted (Zod defaults)", async () => {

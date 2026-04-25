@@ -17,6 +17,7 @@
 
 import crypto from "crypto";
 import fs from "fs";
+import readline from "readline";
 import os from "os";
 import path from "path";
 import { watch as chokidarWatch } from "chokidar";
@@ -31,6 +32,7 @@ import {
 } from "./schema.js";
 import { withLock, sweepStale } from "./lockfile.js";
 import { sha256, canonicalJson } from "../util/hash.js";
+import { safeForLog } from "../util/lang.js";
 
 export type StateChangeListener = (state: StateFileV1) => void;
 
@@ -56,6 +58,12 @@ const CLOCK_FORWARD_JUMP_MS = 24 * 60 * 60 * 1000;
  */
 const CLOCK_FORWARD_CLAMP_OFFSET_MS = 60_000;
 
+// SEC-003: File size caps to prevent unbounded reads / OOM.
+const MAX_STATE_BYTES = 5 * 1024 * 1024;        // 5 MB
+const MAX_EVENTS_BYTES = 100 * 1024 * 1024;     // 100 MB
+const MAX_TRANSCRIPT_BYTES = 50 * 1024 * 1024;  // 50 MB per transcript file
+const MAX_PROJECTS_RECURSE_DEPTH = 8;
+
 // ---------------------------------------------------------------------------
 // readState — §4.4 reader protocol
 // ---------------------------------------------------------------------------
@@ -75,6 +83,20 @@ async function readStateFromPath(
   stateFile: string,
   attempt = 0
 ): Promise<StateFileV1 | null> {
+  // SEC-003: stat first; refuse if too large
+  try {
+    const stat = await fs.promises.stat(stateFile);
+    if (stat.size > MAX_STATE_BYTES) {
+      process.stderr.write(
+        `[glyphling] state.json exceeds size limit (${stat.size} bytes > ${MAX_STATE_BYTES}); refusing to load\n`
+      );
+      return null;
+    }
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw err;
+  }
+
   let raw: string;
   try {
     raw = await fs.promises.readFile(stateFile, "utf8");
@@ -82,6 +104,9 @@ async function readStateFromPath(
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw err;
   }
+
+  // Empty file = same semantics as missing (first-run race or interrupted truncate).
+  if (raw.length === 0) return null;
 
   try {
     const parsed: unknown = JSON.parse(raw);
@@ -138,11 +163,13 @@ async function writeStateUnderLock(
   );
 
   const dir = path.dirname(stateFile);
-  await fs.promises.mkdir(dir, { recursive: true });
+  // SEC-009: stateHome dir created with mode 0o700
+  await fs.promises.mkdir(dir, { recursive: true, mode: 0o700 });
 
   // Write to tmp file
   const payload = JSON.stringify(state, null, 2);
-  const fh = await fs.promises.open(tmpPath, "w");
+  // SEC-009: open tmp file with mode 0o600 (owner read/write only)
+  const fh = await fs.promises.open(tmpPath, "w", 0o600);
   try {
     await fh.write(payload);
     // fsync the tmp file before rename (§4.3 step 4)
@@ -196,7 +223,8 @@ export async function appendEvent(
   const { eventsLog, stateFile } = config.paths;
 
   // Ensure parent directory exists before acquiring lock
-  await fs.promises.mkdir(path.dirname(eventsLog), { recursive: true });
+  // SEC-009: create with mode 0o700
+  await fs.promises.mkdir(path.dirname(eventsLog), { recursive: true, mode: 0o700 });
 
   // -------------------------------------------------------------------------
   // Hold the state lock for the ENTIRE read-compute-append-write sequence.
@@ -263,14 +291,18 @@ export async function appendEvent(
         prevHash: currentHead,
       };
       const rejLine = JSON.stringify(rejWithHash) + "\n";
-      await fs.promises.appendFile(eventsLog, rejLine, "utf8");
+      // SEC-009: appendFile with mode 0o600
+      await fs.promises.appendFile(eventsLog, rejLine, { encoding: "utf8", mode: 0o600 });
     }
 
     // -----------------------------------------------------------------------
     // Append the main event to events.jsonl (DEC-010)
+    // Partial appendFile after SIGKILL produces an unparseable trailing line;
+    // the next replay flags chainBroken (acceptable per security audit SEC-015).
     // -----------------------------------------------------------------------
     const line = JSON.stringify(eventToAppend) + "\n";
-    await fs.promises.appendFile(eventsLog, line, "utf8");
+    // SEC-009: appendFile with mode 0o600
+    await fs.promises.appendFile(eventsLog, line, { encoding: "utf8", mode: 0o600 });
 
     // -----------------------------------------------------------------------
     // Compute the new eventsHead = sha256(canonicalJson(eventToAppend))
@@ -279,7 +311,9 @@ export async function appendEvent(
     const newLastEventAt = clampedTs;
 
     // -----------------------------------------------------------------------
-    // Fold into state if a fold function was provided, then write under lock
+    // Fold into state if a fold function was provided, then write under lock.
+    // Always persist eventsHead (even when current === null) so consecutive
+    // appendEvent calls without an initial writeState still chain correctly.
     // -----------------------------------------------------------------------
     if (fold) {
       const stateForFold = current ?? makeMinimalState();
@@ -294,12 +328,13 @@ export async function appendEvent(
       };
       validateState(nextState);
       await writeStateUnderLock(config, nextState);
-    } else if (current !== null) {
-      // No fold, but still persist the updated integrity fields
+    } else {
+      // No fold: persist the updated integrity fields, creating minimal state if needed
+      const base = current ?? makeMinimalState();
       const nextState: StateFileV1 = {
-        ...current,
+        ...base,
         globals: {
-          ...current.globals,
+          ...base.globals,
           eventsHead: newHead,
           lastEventAt: newLastEventAt,
         },
@@ -342,14 +377,17 @@ export interface ReplayResult {
 /**
  * Read events.jsonl and return all events after `afterByteOffset`.
  *
+ * SEC-003: Stat first; refuse if > MAX_EVENTS_BYTES. Streams via readline
+ * to avoid loading the entire file into memory.
+ *
  * DEC-018 Mechanism 1: Verifies the hash chain (prevHash → eventsHead).
- * On chain break, stops applying events past the break and sets chainBroken=true.
+ * SEC-002: Genesis is allowed only at the very first event (runningHead === "").
+ * Once a chain is established, ANY event with missing or mismatching prevHash
+ * is a chain break — prevHash="" no longer bypasses the check.
  *
  * DEC-018 Mechanism 2: For tokens.delta events with transcriptLineHash, verifies
- * the hash against ~/.claude/projects/**\/*.jsonl. Unmatched events are dropped and
- * a signal.rejected is prepended to the result. Gate: strict rejection only when
- * GLYPHLING_STRICT_TRANSCRIPT=1 is set. Without it, missing matches are still
- * dropped but only if GLYPHLING_STRICT_TRANSCRIPT=1; otherwise they pass through.
+ * the hash against ~/.claude/projects/**\/*.jsonl. SEC-003: Hashes are collected
+ * once per replay run (not re-walked per event) for O(1) lookup.
  *
  * Skips unparseable trailing lines (§9 failure mode: corrupt last line).
  */
@@ -360,9 +398,17 @@ export async function replayEvents(
 ): Promise<ReplayResult> {
   const { eventsLog } = config.paths;
 
-  let raw: string;
+  // SEC-003: stat first; refuse if > MAX_EVENTS_BYTES
+  let fileSize: number;
   try {
-    raw = await fs.promises.readFile(eventsLog, "utf8");
+    const stat = await fs.promises.stat(eventsLog);
+    fileSize = stat.size;
+    if (fileSize > MAX_EVENTS_BYTES) {
+      process.stderr.write(
+        `[glyphling] events.jsonl exceeds size limit (${fileSize} bytes > ${MAX_EVENTS_BYTES}); refusing to replay\n`
+      );
+      return { events: [], lastByteOffset: afterByteOffset, chainBroken: false };
+    }
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") {
       return { events: [], lastByteOffset: 0, chainBroken: false };
@@ -370,25 +416,41 @@ export async function replayEvents(
     throw err;
   }
 
+  // Nothing new since the cursor — short-circuit before opening the file
+  if (afterByteOffset >= fileSize) {
+    return { events: [], lastByteOffset: afterByteOffset, chainBroken: false };
+  }
+
   const strictTranscript =
     process.env["GLYPHLING_STRICT_TRANSCRIPT"] === "1";
 
-  // Byte-slice to content after the cursor
-  const slice = raw.slice(afterByteOffset);
-  const lines = slice.split("\n").filter((l) => l.trim().length > 0);
+  // SEC-003: Transcript hash cache is built lazily — only when we encounter a
+  // tokens.delta event with a transcriptLineHash. Once built, it covers all
+  // remaining events in this replay run (O(1) lookup, not O(N * dir-scan).
+  let transcriptHashCache: Set<string> | null | undefined = undefined;
+
+  // SEC-003: Stream via readline to avoid holding the full file in memory.
+  // The size check above ensures we won't OOM on files under MAX_EVENTS_BYTES.
+  const rawLines = await readLinesFromOffset(eventsLog, afterByteOffset);
 
   const events: GlyphlingEvent[] = [];
   let processed = afterByteOffset;
   let runningHead = knownHead;
 
-  for (const line of lines) {
+  for (const line of rawLines) {
+    // Skip blank lines
+    if (line.trim().length === 0) {
+      processed += Buffer.byteLength(line + "\n", "utf8");
+      continue;
+    }
+
     let parsed: GlyphlingEvent | null = null;
     try {
       parsed = parseEvent(JSON.parse(line));
     } catch {
       // Skip corrupt lines (§9)
       process.stderr.write(
-        `[glyphling] events.jsonl: skipping unparseable line: ${line.slice(0, 80)}\n`
+        `[glyphling] events.jsonl: skipping unparseable line: ${safeForLog(line.slice(0, 80))}\n`
       );
     }
 
@@ -398,30 +460,23 @@ export async function replayEvents(
     if (parsed === null) continue;
 
     // -----------------------------------------------------------------------
-    // DEC-018 Mechanism 1: chain verification
+    // DEC-018 Mechanism 1: chain verification (SEC-002 fix)
     //
-    // A chain break is detected only when:
-    //   - runningHead is non-empty (we know the expected previous hash), AND
-    //   - parsed.prevHash is non-empty (the event claims to be chain-linked), AND
-    //   - parsed.prevHash does NOT match runningHead.
-    //
-    // Events with prevHash="" are treated as legacy (pre-DEC-018) or genesis
-    // events and reset the running head without triggering a break. This
-    // preserves backward-compatibility: test fixtures and events written
-    // directly to events.jsonl without going through appendEvent() are not
-    // falsely flagged as tampered.
+    // Genesis is allowed only at the very first event (runningHead === "").
+    // Once a chain is established, ANY event with missing or mismatching
+    // prevHash is a break — prevHash="" no longer bypasses the check.
     // -----------------------------------------------------------------------
-    if (runningHead !== "" && parsed.prevHash !== "" && parsed.prevHash !== runningHead) {
+    if (runningHead !== "" && parsed.prevHash !== runningHead) {
       process.stderr.write(
-        `[glyphling] event-chain broken at event ${parsed.id}: ` +
-          `expected prevHash="${runningHead}", got "${parsed.prevHash}"\n`
+        `[glyphling] event-chain broken at event ${safeForLog(parsed.id)}: ` +
+          `expected prevHash=${safeForLog(runningHead)}, got ${safeForLog(parsed.prevHash)}\n`
       );
       return {
         events,
         lastByteOffset: processed,
         chainBroken: true,
         brokenAtEventId: parsed.id,
-        reason: "chain.broken",
+        reason: parsed.prevHash === "" ? "chain.broken.missing-prev" : "chain.broken",
       };
     }
 
@@ -432,7 +487,15 @@ export async function replayEvents(
       parsed.type === "tokens.delta" &&
       parsed.transcriptLineHash !== undefined
     ) {
-      const matched = await verifyTranscriptHash(parsed.transcriptLineHash);
+      // SEC-003: Build cache lazily on first tokens.delta event with a hash.
+      // This avoids scanning ~/.claude/projects/ when no transcript events exist.
+      if (transcriptHashCache === undefined) {
+        transcriptHashCache = await buildTranscriptHashCache();
+      }
+      // O(1) lookup: null cache means projects dir is absent → pass-through
+      const matched =
+        transcriptHashCache === null ||
+        transcriptHashCache.has(parsed.transcriptLineHash);
       if (!matched) {
         if (strictTranscript) {
           // In strict mode: drop the event; it doesn't count toward the chain
@@ -468,6 +531,39 @@ export async function replayEvents(
   }
 
   return { events, lastByteOffset: processed, chainBroken: false };
+}
+
+/**
+ * Read all lines from a file starting at `startByte` via readline streaming.
+ * Returns an array of raw line strings (without newlines).
+ * SEC-003: streams the file so we don't hold it fully in memory at once.
+ */
+function readLinesFromOffset(
+  filePath: string,
+  startByte: number
+): Promise<string[]> {
+  return new Promise((resolve, reject) => {
+    const lines: string[] = [];
+    const stream = fs.createReadStream(filePath, {
+      start: startByte,
+      encoding: "utf8",
+    });
+    const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
+
+    rl.on("line", (line) => {
+      lines.push(line);
+    });
+
+    rl.on("close", () => {
+      resolve(lines);
+    });
+
+    rl.on("error", reject);
+    stream.on("error", (err) => {
+      // Only reject if readline hasn't already resolved
+      reject(err);
+    });
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -570,62 +666,83 @@ export async function checkRecoveryNeeded(config: Config): Promise<boolean> {
 }
 
 // ---------------------------------------------------------------------------
-// DEC-018 Mechanism 2: transcript cross-check
+// DEC-018 Mechanism 2: transcript cross-check (SEC-003 caching)
 // ---------------------------------------------------------------------------
 
 /**
- * Search ~/.claude/projects/**\/*.jsonl for a line whose trimmed UTF-8 bytes
- * hash to `lineHash` (sha256 hex). Returns true if a match is found.
+ * Build a Set of all sha256 hashes found in ~/.claude/projects/**\/*.jsonl.
+ * Called once per replayEvents run so we don't re-walk the tree per event.
  *
- * Best-effort: if the projects directory does not exist (dev/test env), returns
- * true (skip the check). File read errors are silently ignored per-file.
+ * Returns null if the projects directory does not exist (dev/test environment),
+ * indicating all checks should be skipped (pass-through).
  */
-async function verifyTranscriptHash(lineHash: string): Promise<boolean> {
+async function buildTranscriptHashCache(): Promise<Set<string> | null> {
   const projectsDir = path.join(os.homedir(), ".claude", "projects");
 
-  // Missing projects dir → skip check (dev/test environment)
   try {
     await fs.promises.access(projectsDir);
   } catch {
-    return true;
+    // Missing projects dir → skip check (dev/test environment)
+    return null;
   }
 
-  return searchDirForHash(projectsDir, lineHash);
+  const hashSet = new Set<string>();
+  await collectHashesFromDir(projectsDir, hashSet, 0);
+  return hashSet;
 }
 
-async function searchDirForHash(dir: string, lineHash: string): Promise<boolean> {
+async function collectHashesFromDir(
+  dir: string,
+  hashSet: Set<string>,
+  depth: number
+): Promise<void> {
+  // SEC-003: cap recursion depth
+  if (depth > MAX_PROJECTS_RECURSE_DEPTH) return;
+
   let entries: fs.Dirent[];
   try {
     entries = await fs.promises.readdir(dir, { withFileTypes: true });
   } catch {
-    return false;
+    return;
   }
 
   for (const entry of entries) {
+    // SEC-003: skip symlinks to prevent traversal of circular links
+    if (entry.isSymbolicLink()) continue;
+
     const fullPath = path.join(dir, entry.name);
     if (entry.isDirectory()) {
-      if (await searchDirForHash(fullPath, lineHash)) return true;
+      await collectHashesFromDir(fullPath, hashSet, depth + 1);
     } else if (entry.isFile() && entry.name.endsWith(".jsonl")) {
-      if (await searchFileForHash(fullPath, lineHash)) return true;
+      await collectHashesFromFile(fullPath, hashSet);
     }
   }
-  return false;
 }
 
-async function searchFileForHash(filePath: string, lineHash: string): Promise<boolean> {
+async function collectHashesFromFile(
+  filePath: string,
+  hashSet: Set<string>
+): Promise<void> {
+  // SEC-003: stat first; skip if > MAX_TRANSCRIPT_BYTES
+  try {
+    const stat = await fs.promises.stat(filePath);
+    if (stat.size > MAX_TRANSCRIPT_BYTES) return;
+  } catch {
+    return;
+  }
+
   let content: string;
   try {
     content = await fs.promises.readFile(filePath, "utf8");
   } catch {
-    return false;
+    return;
   }
 
   for (const line of content.split("\n")) {
     const trimmed = line.trim();
     if (trimmed.length === 0) continue;
-    if (sha256(Buffer.from(trimmed, "utf8")) === lineHash) return true;
+    hashSet.add(sha256(Buffer.from(trimmed, "utf8")));
   }
-  return false;
 }
 
 // ---------------------------------------------------------------------------

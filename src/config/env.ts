@@ -11,6 +11,7 @@
  *   3. Anything else in non-prod           — hard fail (DEC-008 guard)
  */
 
+import fs from "fs";
 import os from "os";
 import path from "path";
 
@@ -54,13 +55,23 @@ function prodHome(): string {
  *
  * DEC-008: "Non-production CLI refuses to start if resolved path is under
  * ~/.claude/ when NODE_ENV !== 'production'."
+ *
+ * SEC-013: On case-insensitive filesystems (darwin/win32), normalise both
+ * paths to lowercase before the prefix check so `~/.Claude/glyphling` and
+ * `~/.claude/glyphling` are treated as identical.
  */
 function assertNonProdGuard(resolvedHome: string, nodeEnv: string): void {
   const isProduction = nodeEnv === "production";
   if (isProduction) return;
 
-  const normalised = path.resolve(resolvedHome);
-  const claudeDir = path.resolve(path.join(os.homedir(), ".claude"));
+  let normalised = path.resolve(resolvedHome);
+  let claudeDir = path.resolve(path.join(os.homedir(), ".claude"));
+
+  // SEC-013: Case-insensitive filesystem normalisation (darwin / win32)
+  if (process.platform === "darwin" || process.platform === "win32") {
+    normalised = normalised.toLowerCase();
+    claudeDir = claudeDir.toLowerCase();
+  }
 
   // Check whether resolvedHome is inside ~/.claude/
   const relative = path.relative(claudeDir, normalised);
@@ -71,13 +82,45 @@ function assertNonProdGuard(resolvedHome: string, nodeEnv: string): void {
   if (isInsideClaudeDir) {
     throw new Error(
       `[glyphling] Non-production run detected but GLYPHLING_HOME resolves to ` +
-        `"${normalised}", which is inside ~/.claude/.\n` +
+        `"${path.resolve(resolvedHome)}", which is inside ~/.claude/.\n` +
         `Set GLYPHLING_HOME to a repo-local path (e.g. ./.dev-state/dev) ` +
         `before running outside production mode.\n` +
         `This guard exists to prevent dev/demo/test runs from corrupting your ` +
         `real pet state (DEC-008).`
     );
   }
+}
+
+/**
+ * SEC-006: Throws if `filePath` already exists and is a symlink.
+ * Applied to state files on the writer path to prevent symlink-following attacks.
+ */
+function assertNotSymlink(filePath: string, label: string): void {
+  try {
+    const lstat = fs.lstatSync(filePath);
+    if (lstat.isSymbolicLink()) {
+      throw new Error(
+        `[glyphling] ${label} at "${filePath}" is a symbolic link. ` +
+          `Refusing to write state through a symlink (SEC-006). ` +
+          `Remove or replace the symlink before starting glyphling.`
+      );
+    }
+  } catch (err) {
+    // ENOENT = file doesn't exist yet — that's fine
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw err;
+  }
+}
+
+/**
+ * SEC-006: Run symlink checks on the stateHome directory and critical state files.
+ * Called on the writer path (TUI / mutating CLI subcommands) only.
+ */
+export function assertStateNotSymlinked(config: Config): void {
+  assertNotSymlink(config.stateHome, "stateHome");
+  assertNotSymlink(config.paths.stateFile, "state.json");
+  assertNotSymlink(config.paths.eventsLog, "events.jsonl");
+  assertNotSymlink(config.paths.lockFile, "state.json.lock");
 }
 
 // ---------------------------------------------------------------------------

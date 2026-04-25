@@ -27,6 +27,7 @@ import {
 } from "./persistence.js";
 import { makeEmptyState, validateState } from "./schema.js";
 import { buildConfig } from "../config/env.js";
+import { sha256, canonicalJson } from "../util/hash.js";
 import type { StateFileV1, GlyphlingEvent } from "./schema.js";
 
 // ---------------------------------------------------------------------------
@@ -305,12 +306,19 @@ describe("replayEvents", () => {
     const config = await makeTmpConfig();
     await fs.promises.mkdir(config.stateHome, { recursive: true });
 
-    // Write a mix of valid and corrupt lines
-    const validEvent = makeTestEvent({ id: "valid" });
+    // Write a mix of valid and corrupt lines.
+    // valid is the genesis event (prevHash="").
+    // valid2 must have prevHash = sha256(canonicalJson(valid)) since the corrupt line
+    // is skipped (not in the chain), so the running head after valid is its hash.
+    const validEvent = makeTestEvent({ id: "valid", prevHash: "" });
+    const valid2Event = makeTestEvent({
+      id: "valid2",
+      prevHash: sha256(canonicalJson(validEvent)),
+    });
     const lines = [
       JSON.stringify(validEvent),
       "{ this is corrupt json }",
-      JSON.stringify(makeTestEvent({ id: "valid2" })),
+      JSON.stringify(valid2Event),
     ];
     await fs.promises.writeFile(
       config.paths.eventsLog,

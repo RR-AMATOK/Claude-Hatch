@@ -5,13 +5,27 @@
  * All tests use injected env + nodeEnv to avoid touching process.env.
  */
 
+import fs from "fs";
 import os from "os";
 import path from "path";
-import { describe, it, expect } from "vitest";
-import { resolveStateHome, buildConfig } from "./env.js";
+import { afterEach, describe, it, expect } from "vitest";
+import { resolveStateHome, buildConfig, assertStateNotSymlinked } from "./env.js";
 
 const home = os.homedir();
 const claudeGlyphling = path.join(home, ".claude", "glyphling");
+
+let tmpDirs: string[] = [];
+
+afterEach(async () => {
+  for (const dir of tmpDirs) {
+    try {
+      await fs.promises.rm(dir, { recursive: true, force: true });
+    } catch {
+      // Ignore
+    }
+  }
+  tmpDirs = [];
+});
 
 // ---------------------------------------------------------------------------
 // resolveStateHome — happy paths
@@ -108,5 +122,49 @@ describe("buildConfig — derived file paths", () => {
     expect(config.paths.eventsLog).toBe("/tmp/test-home/events.jsonl");
     expect(config.paths.graveyardDir).toBe("/tmp/test-home/graveyard");
     expect(config.paths.ipcSocket).toBe("/tmp/test-home/ipc.sock");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SEC-006: Symlink refusal tests
+// ---------------------------------------------------------------------------
+
+describe("SEC-006: assertStateNotSymlinked", () => {
+  it("does not throw when state files do not exist (first run)", async () => {
+    const dir = await fs.promises.mkdtemp(
+      path.join(os.tmpdir(), "glyphling-env-test-")
+    );
+    tmpDirs.push(dir);
+    const config = buildConfig(dir);
+    // No files created — assertStateNotSymlinked should be silent
+    expect(() => assertStateNotSymlinked(config)).not.toThrow();
+  });
+
+  it("throws when state.json is a symlink", async () => {
+    const dir = await fs.promises.mkdtemp(
+      path.join(os.tmpdir(), "glyphling-env-test-")
+    );
+    tmpDirs.push(dir);
+    const config = buildConfig(dir);
+    await fs.promises.mkdir(dir, { recursive: true });
+
+    // Create the actual target file, then symlink state.json → target
+    const target = path.join(dir, "state.json.real");
+    await fs.promises.writeFile(target, "{}", "utf8");
+    await fs.promises.symlink(target, config.paths.stateFile);
+
+    expect(() => assertStateNotSymlinked(config)).toThrow(/symbolic link/);
+  });
+
+  it("does not throw when state.json is a regular file", async () => {
+    const dir = await fs.promises.mkdtemp(
+      path.join(os.tmpdir(), "glyphling-env-test-")
+    );
+    tmpDirs.push(dir);
+    const config = buildConfig(dir);
+    await fs.promises.mkdir(dir, { recursive: true });
+    await fs.promises.writeFile(config.paths.stateFile, "{}", "utf8");
+
+    expect(() => assertStateNotSymlinked(config)).not.toThrow();
   });
 });

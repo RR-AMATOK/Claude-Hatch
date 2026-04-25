@@ -206,14 +206,15 @@ export async function sweepStale(stateHome: string): Promise<void> {
 /**
  * Ensure a file exists so proper-lockfile can lock it.
  * Creates an empty file if it does not exist. Creates parent dirs as needed.
+ * SEC-009: stateHome dir is created with mode 0o700; lock file with 0o600.
  */
 async function ensureFileExists(filePath: string): Promise<void> {
   const dir = path.dirname(filePath);
-  await fs.promises.mkdir(dir, { recursive: true });
+  await fs.promises.mkdir(dir, { recursive: true, mode: 0o700 });
 
   try {
-    // O_WRONLY | O_CREAT — create if missing, otherwise no-op
-    const fh = await fs.promises.open(filePath, "a");
+    // O_WRONLY | O_CREAT — create if missing, otherwise no-op. Mode 0o600 (SEC-009).
+    const fh = await fs.promises.open(filePath, "a", 0o600);
     await fh.close();
   } catch {
     // Already exists — fine
