@@ -35,7 +35,7 @@ vi.mock("../export/gif.js", () => ({
   TIER_SPECS: {
     1: { requiredLevel: 25, width: 320, height: 240, fps: 8, maxDurationSecs: 3, watermark: true, userScenePick: false, goldenBorder: false },
     2: { requiredLevel: 250, width: 640, height: 480, fps: 15, maxDurationSecs: 10, watermark: false, userScenePick: true, goldenBorder: false },
-    3: { requiredLevel: 1024, width: 1280, height: 720, fps: 30, maxDurationSecs: 30, watermark: false, userScenePick: true, goldenBorder: true },
+    3: { requiredLevel: 1618, width: 1280, height: 720, fps: 30, maxDurationSecs: 30, watermark: false, userScenePick: true, goldenBorder: true },
   },
   gateForTier: vi.fn(),
   requiredLevelForTier: vi.fn(),
@@ -144,8 +144,8 @@ beforeEach(() => {
 // ---------------------------------------------------------------------------
 
 describe("autoPickTier (D2)", () => {
-  it("L1024 pet → Tier 3", () => {
-    const pet = makePet(1024);
+  it("L1618 pet → Tier 3 (Golden Level, DEC-020)", () => {
+    const pet = makePet(1618);
     expect(autoPickTier(pet)).toBe(3);
   });
 
@@ -185,8 +185,8 @@ describe("autoPickTier (D2)", () => {
 // ---------------------------------------------------------------------------
 
 describe("exportCommand — auto-tier selection (D2)", () => {
-  it("L1024 pet + no arg → picks Tier 3", async () => {
-    const pet = makePet(1024);
+  it("L1618 pet + no arg → picks Tier 3 (Golden Level, DEC-020)", async () => {
+    const pet = makePet(1618);
     mockReadState.mockResolvedValue(makeState(pet));
     mockExportGif.mockResolvedValue({
       ok: true,

@@ -4,7 +4,7 @@
  * Three tiers gated by level:
  *   Tier 1 Snapshot  — L ≥ 25,   320×240,  8fps, ≤3s,  watermarked
  *   Tier 2 Portrait  — L ≥ 250,  640×480,  15fps, ≤10s, no watermark, scene picker
- *   Tier 3 Showcase  — L ≥ 1024, 1280×720, 30fps, ≤30s, cinematic + golden border
+ *   Tier 3 Showcase  — L ≥ 1618, 1280×720, 30fps, ≤30s, cinematic + golden border
  *
  * The gate check reads `pet.xp` → computed level via `levelFromCumXp()`.
  * The `unlock.gif.tierN` flags are a convenience side-effect but are NOT the
@@ -38,7 +38,7 @@ export interface TierSpec {
   readonly watermark: boolean;
   /** Tier 2+: user may choose a scene. */
   readonly userScenePick: boolean;
-  /** Tier 3: cinematic frame + "1024 Club" golden border. */
+  /** Tier 3: cinematic frame + "1618 Golden Level" border. */
   readonly goldenBorder: boolean;
 }
 
@@ -68,7 +68,7 @@ export const TIER_SPECS: Record<GifTier, TierSpec> = {
     goldenBorder: false,
   },
   3: {
-    requiredLevel: 1024,
+    requiredLevel: 1618,
     width: 1280,
     height: 720,
     fps: 30,
@@ -89,7 +89,7 @@ export const TIER_SPECS: Record<GifTier, TierSpec> = {
  * @example
  * requiredLevelForTier(1) // 25
  * requiredLevelForTier(2) // 250
- * requiredLevelForTier(3) // 1024
+ * requiredLevelForTier(3) // 1618
  */
 export function requiredLevelForTier(tier: GifTier): number {
   return TIER_SPECS[tier].requiredLevel;

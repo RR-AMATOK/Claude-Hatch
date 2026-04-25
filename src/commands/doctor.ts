@@ -4,8 +4,9 @@
  * Reads (does NOT acquire) state. Reports as plain text:
  *   - Watcher running? (daemon lockfile present + process alive via kill -0)
  *   - Last tokens.delta event: timestamp + XP awarded
- *   - Today's token cap usage: XP from tokens today / cap
  *   - Last entry from watch.log if it's an error line
+ *
+ * DEC-020: Daily token cap display removed (caps abolished).
  *
  * Architecture §7.4 / §14.2: doctor is a read-only one-shot (no state writes,
  * no lockfile acquisition). Never calls writeState or appendEvent.
@@ -16,7 +17,6 @@ import os from "os";
 import path from "path";
 import type { Config } from "../config/env.js";
 import { readState } from "../state/persistence.js";
-import { DAILY_CAP_TOKENS } from "../xp/engine.js";
 import { parseEvent } from "../state/schema.js";
 
 // ---------------------------------------------------------------------------
@@ -79,20 +79,7 @@ export async function runDoctor(config: Config): Promise<number> {
   }
 
   // -------------------------------------------------------------------------
-  // 4. Today's token cap usage
-  // -------------------------------------------------------------------------
-  if (activePet !== null) {
-    const today = new Date().toISOString().slice(0, 10);
-    const todayCaps = activePet.dailyCaps[today];
-    const usedToday = todayCaps?.["tokens"] ?? 0;
-    const capPct = DAILY_CAP_TOKENS > 0
-      ? Math.round((usedToday / DAILY_CAP_TOKENS) * 100)
-      : 0;
-    out(`Token cap: ${usedToday} / ${DAILY_CAP_TOKENS} XP today (${capPct}%)`);
-  }
-
-  // -------------------------------------------------------------------------
-  // 5. Last error from watch.log
+  // 4. Last error from watch.log
   // -------------------------------------------------------------------------
   const logError = await lastLogError(path.join(config.stateHome, WATCH_LOG_FILENAME));
   if (logError !== null) {

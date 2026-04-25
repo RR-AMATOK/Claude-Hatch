@@ -128,8 +128,8 @@ describe("exportGif — TIER_LOCKED", () => {
     expect(mockRunVhs).not.toHaveBeenCalled();
   });
 
-  it("blocks L1023 pet from Tier 3 (requires L1024)", async () => {
-    const pet = makePet(1023);
+  it("blocks L1617 pet from Tier 3 (requires L1618, DEC-020)", async () => {
+    const pet = makePet(1617);
     const result = await exportGif(baseParams(3, pet));
     expect(result.ok).toBe(false);
     if (!result.ok) {
@@ -220,8 +220,8 @@ describe("exportGif — success", () => {
     }
   });
 
-  it("returns ok:true for Tier 3 at L1024", async () => {
-    const pet = makePet(1024);
+  it("returns ok:true for Tier 3 at L1618 (Golden Level, DEC-020)", async () => {
+    const pet = makePet(1618);
     const result = await exportGif(baseParams(3, pet));
     expect(result.ok).toBe(true);
     if (result.ok) {

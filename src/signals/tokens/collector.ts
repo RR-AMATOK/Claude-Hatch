@@ -7,13 +7,10 @@
  *   (b) EMIT_INTERVAL_MS (60s) have elapsed since the last emit AND
  *       accumulated > 0
  *
- * XP formula (architecture §6.3, engine.ts): floor(tokens / 500) → 1 XP per 500 tokens.
+ * XP formula (DEC-020, engine.ts): floor(tokens / 1000) → 1 XP per 1000 tokens.
  *
- * Daily cap: DAILY_CAP_TOKENS = 6000 XP/day from tokens.delta events.
- * Cap enforcement is performed by applyEvent() in xp/engine.ts via the fold
- * function passed to appendEvent(). The collector itself does NOT enforce the
- * cap — it only computes xpDelta; the XPEngine applies the cap when folding
- * the event into state.
+ * DEC-020: No daily caps. The collector computes xpDelta; the XPEngine applies it
+ * in full when folding the event into state.
  *
  * The collector holds no lockfile of its own. It delegates all persistence
  * to appendEvent() from src/state/persistence.ts, which holds the state lock

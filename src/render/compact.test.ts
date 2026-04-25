@@ -306,7 +306,7 @@ describe("getLifeStage", () => {
 
   it("returns adult for levels 10+", () => {
     expect(getLifeStage(10)).toBe("adult");
-    expect(getLifeStage(1024)).toBe("adult");
+    expect(getLifeStage(1618)).toBe("adult");
   });
 });
 
@@ -429,8 +429,8 @@ describe("renderHudRow", () => {
     expect(result).not.toContain("[1/1]");
   });
 
-  it("shows Ascendant star suffix at level 1024", () => {
-    const ascendant = makePet({ xp: cumulativeXpForLevel(1024), level: 1024 });
+  it("shows Ascendant star suffix at level 1618 (DEC-020)", () => {
+    const ascendant = makePet({ xp: cumulativeXpForLevel(1618), level: 1618 });
     const result = renderHudRow(ascendant, "celebrating", 1, 0, "none", false);
     expect(result).toContain("*");
   });
@@ -572,65 +572,62 @@ describe("FALLBACK_OUTPUT", () => {
 // D6 — Ascendant immunity in renderer (DEC-019)
 // ---------------------------------------------------------------------------
 
-describe("deriveMood — Ascendant immunity (DEC-019 D6)", () => {
-  const XP_L1024 = cumulativeXpForLevel(1024);
+describe("deriveMood — Ascendant immunity (DEC-019 D6 / DEC-020)", () => {
+  const XP_L1618 = cumulativeXpForLevel(1618);
   const now = Date.now();
 
-  it("L1024 pet with heavy neglect → 'content' (not sick/dying)", () => {
+  it("L1618 pet with heavy neglect → 'content' (not sick/dying)", () => {
     // Massive neglect that would normally trigger dying
     const pet = makePet({
-      xp: XP_L1024,
-      level: 1024,
+      xp: XP_L1618,
+      level: 1618,
       accumulatedNeglectSeconds: 300_000, // 83 hours — well past dying threshold
     });
     expect(deriveMood(pet, now)).toBe("content");
   });
 
-  it("L1024 pet with legacy sick state in stored data → 'content' (renderer ignores it)", () => {
-    // Simulate a legacy pet that somehow has sick state but has since ascended
+  it("L1618 pet with legacy sick state in stored data → 'content' (renderer ignores it)", () => {
     const pet = makePet({
-      xp: XP_L1024,
-      level: 1024,
+      xp: XP_L1618,
+      level: 1618,
       accumulatedNeglectSeconds: 200_000, // would normally be 'sick'
       lastFedAt: null, // would normally be 'hungry'
     });
-    // Even though stored state looks bad, L1024 renders as content
     expect(deriveMood(pet, now)).toBe("content");
   });
 
-  it("L1023 pet with same neglect → still shows sick (regression guard)", () => {
-    const XP_L1023 = cumulativeXpForLevel(1023);
+  it("L1617 pet with same neglect → still shows sick (regression guard — gate is exactly 1618)", () => {
+    const XP_L1617 = cumulativeXpForLevel(1617);
     const pet = makePet({
-      xp: XP_L1023,
-      level: 1023,
+      xp: XP_L1617,
+      level: 1617,
       accumulatedNeglectSeconds: 200_000, // 200_000s >= 86400 (sick threshold) but < 216000 (dying)
     });
-    // L1023 is NOT an Ascendant — neglect rules apply; 200k seconds → sick
+    // L1617 is NOT an Ascendant — neglect rules apply; 200k seconds → sick
     expect(deriveMood(pet, now)).toBe("sick");
   });
 });
 
-describe("pickScene — Ascendant immunity (DEC-019 D6)", () => {
-  const XP_L1024 = cumulativeXpForLevel(1024);
+describe("pickScene — Ascendant immunity (DEC-019 D6 / DEC-020)", () => {
+  const XP_L1618 = cumulativeXpForLevel(1618);
   const now = Date.now();
 
-  it("L1024 pet with heavy neglect → idle scene (not sick)", () => {
+  it("L1618 pet with heavy neglect → idle scene (not sick)", () => {
     const pet = makePet({
-      xp: XP_L1024,
-      level: 1024,
+      xp: XP_L1618,
+      level: 1618,
       accumulatedNeglectSeconds: 200_000,
     });
     const scene = pickScene(pet, now);
     expect(scene).not.toBe("sick");
-    // Should be one of the idle variants
     expect(["idle-baseline", "idle-energetic", "idle-stoic"]).toContain(scene);
   });
 
-  it("L1023 pet with same neglect → sick scene (regression guard)", () => {
-    const XP_L1023 = cumulativeXpForLevel(1023);
+  it("L1617 pet with same neglect → sick scene (regression guard — gate is exactly 1618)", () => {
+    const XP_L1617 = cumulativeXpForLevel(1617);
     const pet = makePet({
-      xp: XP_L1023,
-      level: 1023,
+      xp: XP_L1617,
+      level: 1617,
       accumulatedNeglectSeconds: 200_000,
     });
     expect(pickScene(pet, now)).toBe("sick");

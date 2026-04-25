@@ -631,9 +631,9 @@ describe("start() boot API", () => {
 // D6 — Ascendant immunity (DEC-019)
 // ---------------------------------------------------------------------------
 
-describe("computeTick — Ascendant immunity (DEC-019 D6)", () => {
-  const XP_L1024 = cumulativeXpForLevel(1024);
-  const XP_L1023 = cumulativeXpForLevel(1023);
+describe("computeTick — Ascendant immunity (DEC-019 D6 / DEC-020)", () => {
+  const XP_L1024 = cumulativeXpForLevel(1618);
+  const XP_L1023 = cumulativeXpForLevel(1617);
 
   // 5 simulated wall-clock days of 60s ticks at 1-minute intervals
   // = 5 * 24 * 60 = 7200 ticks
@@ -667,7 +667,7 @@ describe("computeTick — Ascendant immunity (DEC-019 D6)", () => {
     return { finalPet: current, allSideEffects, died };
   }
 
-  it("L1024 pet: 5 simulated days with no interaction → still alive, neglect stays at 0, no health events", () => {
+  it("L1618 pet: 5 simulated days with no interaction → still alive, neglect stays at 0, no health events (DEC-020)", () => {
     const pet = makePet({
       xp: XP_L1024,
       accumulatedNeglectSeconds: 0,
@@ -688,7 +688,7 @@ describe("computeTick — Ascendant immunity (DEC-019 D6)", () => {
     expect(healthEvents).toHaveLength(0);
   });
 
-  it("L1023 pet: 5 simulated days with no interaction → dies (regression guard — gate is exactly 1024)", () => {
+  it("L1617 pet: 5 simulated days with no interaction → dies (regression guard — gate is exactly 1618)", () => {
     const pet = makePet({
       xp: XP_L1023,
       accumulatedNeglectSeconds: 0,
@@ -702,8 +702,8 @@ describe("computeTick — Ascendant immunity (DEC-019 D6)", () => {
     expect(died).toBe(true);
   });
 
-  it("transition: pet at L1023 with accumulated neglect gains XP to L1024 → subsequent ticks freeze accumulation", () => {
-    // Build a pet at L1023 with some existing neglect but not yet dead
+  it("transition: pet at L1617 with accumulated neglect gains XP to L1618 → subsequent ticks freeze accumulation", () => {
+    // Build a pet at L1617 with some existing neglect but not yet dead
     const someNeglect = SICK_THRESHOLD_S; // 36h = 129600s
     const petAtL1023 = makePet({
       xp: XP_L1023,
@@ -712,11 +712,11 @@ describe("computeTick — Ascendant immunity (DEC-019 D6)", () => {
       lastInteractionAt: new Date(BASE_NOW - 2 * TICK_MS).toISOString(),
     });
 
-    // Single tick at L1023: accumulation advances
+    // Single tick at L1617: accumulation advances
     const resultBefore = computeTick(petAtL1023, BASE_NOW);
     expect(resultBefore.newAccumulatedNeglectSeconds).toBeGreaterThan(someNeglect);
 
-    // Now promote to L1024 (add just enough XP to cross the threshold)
+    // Now promote to L1618 (add just enough XP to cross the threshold)
     const petAtL1024 = {
       ...petAtL1023,
       xp: XP_L1024,

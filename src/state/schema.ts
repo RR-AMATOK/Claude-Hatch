@@ -134,7 +134,7 @@ export const PetSchema = z
     lastFedAt: ISO8601Schema.nullable(),
     lastInteractionAt: ISO8601Schema,
     xp: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER / 2),
-    level: z.number().int().min(0).max(1024),
+    level: z.number().int().min(0).max(1618),
     personality: PersonalityVectorSchema,
     pauseIntervals: z.array(PauseIntervalSchema).max(1000),
     /** DEC-009: accumulated computer-awake seconds since last interaction. */
@@ -148,8 +148,13 @@ export const PetSchema = z
       .refine((obj) => Object.keys(obj).length <= 64, {
         message: "languageExposure must not exceed 64 keys",
       }),
-    /** DEC-018: per-day XP accumulation for daily caps. Pruned to last 7 days. */
-    dailyCaps: DailyCapsSchema.default({}),
+    /**
+     * DEC-018: per-day XP accumulation for daily caps.
+     * DEC-020: Daily caps removed. This field is vestigial — kept optional for
+     * backwards-compatible parsing of existing state files (e.g. Bramble's).
+     * No code path writes to it under DEC-020.
+     */
+    dailyCaps: DailyCapsSchema.optional().default({}),
   })
   .refine(
     (p) => {
@@ -261,6 +266,8 @@ export const EventTypeSchema = z.enum([
   "export.failed",
   // Integrity events (emitted by persistence / XP engine — DEC-018)
   "signal.rejected",
+  // Migration events (emitted by DEC-020 migration on first load)
+  "pet.regrade",
 ]);
 
 export type EventType = z.infer<typeof EventTypeSchema>;
@@ -298,11 +305,13 @@ export type GlyphlingEvent = z.infer<typeof GlyphlingEventSchema>;
 // signal.rejected payload (DEC-018)
 // ---------------------------------------------------------------------------
 
-/** Reason codes for signal.rejected events (DEC-018). */
+/**
+ * Reason codes for signal.rejected events (DEC-018).
+ * DEC-020: "cap.daily" removed (daily caps abolished).
+ */
 export const RejectionReasonSchema = z.enum([
   "chain.broken",
   "chain.broken.missing-prev",
-  "cap.daily",
   "clock.jump.forward",
   "clock.jump.backward",
   "transcript.missing",
