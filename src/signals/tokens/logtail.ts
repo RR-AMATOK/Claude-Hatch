@@ -82,6 +82,16 @@ export class LogTailTokenSignalSource implements TokenSignalSource {
   private watcher: FSWatcher | null = null;
   private started = false;
 
+  // In-memory cursor cache. Loaded lazily on first access (or via start()).
+  // Holding cursors in memory eliminates a read-modify-write race that the
+  // disk-only path had: when chokidar fires `add` for hundreds of files
+  // concurrently on startup, two processFile calls would each loadCursors
+  // → modify their key → saveCursors, with the later write overwriting the
+  // earlier one's update for a different key. The fix is to keep authoritative
+  // state in memory and serialize disk flushes (see flushChain below).
+  private cursorsInMem: CursorMap | null = null;
+  private flushChain: Promise<unknown> = Promise.resolve();
+
   /**
    * @param signalStateDir Path to ${GLYPHLING_HOME}/signal-state/ (for cursor persistence).
    */
@@ -103,19 +113,31 @@ export class LogTailTokenSignalSource implements TokenSignalSource {
 
     const projDir = projectsDir();
 
-    this.watcher = chokidarWatch(`${projDir}/**/*.jsonl`, {
+    // chokidar v4+ behaviour required three changes vs. its v3 defaults:
+    //   1. Glob patterns are gone — pass the bare directory and filter
+    //      `.jsonl` in the handler. Auto-picks-up new project subdirs.
+    //   2. Default recursion depth is shallow — pass `depth: 99` so all
+    //      `~/.claude/projects/<encoded-cwd>/<session>.jsonl` files are
+    //      reached.
+    //   3. `awaitWriteFinish` would suppress initial scan adds for files
+    //      that aren't currently being written, which is exactly what we
+    //      need on startup. Dropped — the cursor mechanism in
+    //      processFile() already handles repeated notifications
+    //      idempotently (only reads from saved offset forward).
+    //   4. The previous `ignored: /(^|[/\\])\../` dotfile guard matched
+    //      ANY path component starting with `.` including `.claude`
+    //      itself — so the watched root was self-ignored. Dropped; the
+    //      `.jsonl` filter below is sufficient.
+    this.watcher = chokidarWatch(projDir, {
       persistent: true,
       ignoreInitial: false, // process existing files on startup to catch up
-      awaitWriteFinish: {
-        stabilityThreshold: 100,
-        pollInterval: 100,
-      },
-      // Ignore dotfiles (not relevant)
-      ignored: /(^|[/\\])\../,
+      depth: 99,
     });
 
     // Handle new files and changes identically: read from cursor forward.
+    // Filter to .jsonl here since the watcher binds to the whole directory.
     const handleFile = (filePath: string) => {
+      if (!filePath.endsWith(".jsonl")) return;
       void this.processFile(filePath, onDelta);
     };
 
@@ -163,8 +185,8 @@ export class LogTailTokenSignalSource implements TokenSignalSource {
     filePath: string,
     onDelta: (delta: TokenDelta) => void
   ): Promise<void> {
-    // Read current cursors
-    const cursors = await this.loadCursors();
+    // Use the in-memory cache; load from disk on first access.
+    const cursors = await this.getCursors();
     const savedOffset = cursors[filePath] ?? 0;
 
     // Get current file size
@@ -213,9 +235,9 @@ export class LogTailTokenSignalSource implements TokenSignalSource {
         if (delta.session) sessionId = delta.session;
       }
 
-      // Save updated cursor regardless of whether we found tokens
+      // Update cursor in memory; queue a serialized flush to disk.
       cursors[filePath] = newOffset;
-      await this.saveCursors(cursors);
+      await this.queueFlush();
 
       // Emit delta if we found any tokens
       if (totalTokens > 0 && latestTs !== null) {
@@ -253,21 +275,56 @@ export class LogTailTokenSignalSource implements TokenSignalSource {
     return {};
   }
 
-  private async saveCursors(cursors: CursorMap): Promise<void> {
+  /**
+   * Lazily load cursors from disk into the in-memory cache. Returns the
+   * cache reference — callers may mutate it directly; mutations become
+   * durable on the next queueFlush().
+   */
+  private async getCursors(): Promise<CursorMap> {
+    if (this.cursorsInMem === null) {
+      this.cursorsInMem = await this.loadCursors();
+    }
+    return this.cursorsInMem;
+  }
+
+  /**
+   * Schedule a write of the current in-memory cursors to disk. Multiple
+   * concurrent calls collapse into a serial chain — each flush writes the
+   * latest snapshot, so coalescing is safe (later writes simply supersede
+   * earlier ones with no data loss).
+   */
+  private queueFlush(): Promise<void> {
+    const next = this.flushChain.then(() => this.flushNow());
+    this.flushChain = next.catch(() => undefined);
+    return next;
+  }
+
+  /**
+   * Atomic write: tmp file with a unique random suffix, then rename onto
+   * the canonical cursor file. Unique tmp avoids the rename-source-ENOENT
+   * race the previous shared-tmp-name implementation had under concurrency.
+   */
+  private async flushNow(): Promise<void> {
+    if (this.cursorsInMem === null) return;
+    const snapshot = { ...this.cursorsInMem };
     await fs.promises.mkdir(this.signalStateDir, { recursive: true, mode: 0o700 });
-    const tmp = this.cursorFile + ".tmp." + process.pid;
+    const tmp =
+      this.cursorFile +
+      ".tmp." +
+      process.pid +
+      "." +
+      Math.random().toString(36).slice(2);
     try {
-      await fs.promises.writeFile(tmp, JSON.stringify(cursors, null, 2) + "\n", {
+      await fs.promises.writeFile(tmp, JSON.stringify(snapshot, null, 2) + "\n", {
         encoding: "utf8",
         mode: 0o600,
       });
       await fs.promises.rename(tmp, this.cursorFile);
     } finally {
-      // Clean up tmp on failure (best-effort)
       try {
         await fs.promises.unlink(tmp);
       } catch {
-        // Already renamed or never created — fine
+        // Rename succeeded (tmp gone) or never written — fine.
       }
     }
   }
