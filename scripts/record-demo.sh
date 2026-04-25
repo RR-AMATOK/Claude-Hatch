@@ -69,14 +69,30 @@ fi
 SANDBOX="$(mktemp -d -t glyphling-demo.XXXXXXXX)"
 trap 'rm -rf "$SANDBOX"' EXIT
 
-mkdir -p "$SANDBOX/home" "$SANDBOX/state"
+mkdir -p "$SANDBOX/home" "$SANDBOX/state" "$SANDBOX/bin"
 cp "$TAPE_ABS" "$SANDBOX/recording.tape"
+
+# Symlink dist/ into the sandbox so the GLYPHLING_BIN path is space- and
+# tilde-free. The repo path (especially under iCloud Drive's
+# `Mobile Documents/com~apple~CloudDocs/`) trips both bash word-splitting AND
+# the SEC-007 validator inside `glyphling export`. The sandbox path is always
+# safe (`/var/folders/...` or `/tmp/...`).
+ln -s "$REPO_ROOT/dist" "$SANDBOX/dist"
+SAFE_GLYPHLING_BIN="$SANDBOX/dist/src/bin.js"
+
+# Install a `glyphling` shim on the sandbox PATH so tapes can call
+# `glyphling <cmd>` without exposing the bin path.
+cat > "$SANDBOX/bin/glyphling" <<EOF
+#!/bin/sh
+exec node "$SAFE_GLYPHLING_BIN" "\$@"
+EOF
+chmod +x "$SANDBOX/bin/glyphling"
 
 # Resolve PATH entries for the whitelist. We include only the dirs that host
 # the binaries we actually invoke, plus /usr/bin:/bin for core tools vhs may shell out to.
 VHS_DIR="$(dirname "$VHS_BIN")"
 NODE_DIR="$(dirname "$NODE_BIN")"
-SAFE_PATH="$VHS_DIR:$NODE_DIR:/usr/bin:/bin"
+SAFE_PATH="$SANDBOX/bin:$VHS_DIR:$NODE_DIR:/usr/bin:/bin"
 
 cd "$SANDBOX"
 
@@ -96,7 +112,7 @@ env -i \
   LANG="C.UTF-8" \
   PATH="$SAFE_PATH" \
   GLYPHLING_HOME="$SANDBOX/state" \
-  GLYPHLING_BIN="$GLYPHLING_BIN" \
+  GLYPHLING_BIN="$SAFE_GLYPHLING_BIN" \
   "$VHS_BIN" recording.tape
 
 # --- Layer 4: collect output --------------------------------------------

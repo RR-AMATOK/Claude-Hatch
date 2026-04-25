@@ -33,7 +33,7 @@ PR description.
 
 ```
 # --- glyphling house style ---
-Set Shell "sh"
+Set Shell "bash"
 Set WindowBar ""           # no title-bar chrome
 Set Margin 0
 Set Padding 20
@@ -43,9 +43,10 @@ Set TypingSpeed 50ms
 Set PlaybackSpeed 1.0
 Set Framerate 24
 # --- per-tier dimensions (choose one) -----------------------------------
-# statusline tier:  Set Width 960  Set Height 80
-# standard tier:    Set Width 960  Set Height 240
-# wide / TUI tier:  Set Width 1280 Set Height 360
+# true statusline tier:  Set Width 960  Set Height 120  Set Padding 10
+#   (HUD + 2-row silhouette + prompt = ~4 rows; 80px is too tight)
+# standard tier:         Set Width 960  Set Height 240
+# wide / TUI tier:       Set Width 1280 Set Height 360
 ```
 
 Notes on each directive:
@@ -56,8 +57,20 @@ Notes on each directive:
   point of cartoonish. 14 keeps the art crisp at README embedding widths.
 - `Theme "GruvboxDark"` — deliberately neutral. Dracula's purple clashed
   with the species accents (rune is purple).
-- `Shell "sh"` — no zsh/bash profile loading. The sandbox has neither
-  installed anyway; declaring it makes the tape portable.
+- `Shell "bash"` — vhs rejects `"sh"` ("invalid shell"). `bash` is what
+  the sandbox actually has on PATH (`/bin/bash`). No profile loads
+  because `env -i` strips `BASH_ENV`/`ENV`.
+
+## Calling glyphling from a tape
+
+Tapes invoke the binary through a `glyphling` shim that the wrapper
+installs on the sandbox PATH. Just `Type "glyphling <subcommand>"` —
+**do not** use `node $GLYPHLING_BIN` or any path expansion. The repo path
+may contain spaces (iCloud Drive layouts) that break unquoted bash
+expansion, and `glyphling export` validates `GLYPHLING_BIN` against a
+strict allowlist (SEC-007) that rejects spaces and tildes outright. The
+wrapper symlinks `dist/` into the sandbox so `GLYPHLING_BIN` is always a
+clean `/var/folders/...`-style path; tapes never need to know.
 
 ## Running a recording
 
