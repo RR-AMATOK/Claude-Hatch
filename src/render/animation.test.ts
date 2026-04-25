@@ -434,10 +434,11 @@ describe("SCENE_WINDOWS_MS — invariants", () => {
     }
   });
 
-  it("levelup-flash window equals scene duration (10 frames @ 30fps = ~333ms)", () => {
-    // Window is now derived from scene metadata so it always matches the
-    // scene's natural duration. No more frozen-on-last-frame artifacts.
-    expect(SCENE_WINDOWS_MS["levelup-flash"]).toBe(333);
+  it("levelup-flash window equals scene duration (10 frames @ 10fps = 1000ms)", () => {
+    // Window is derived from scene metadata so it always matches the scene's
+    // natural duration. fps was lowered from 30 → 10 to make the celebration
+    // visibly perceptible in the live TUI (333 ms was too brief).
+    expect(SCENE_WINDOWS_MS["levelup-flash"]).toBe(1000);
   });
 });
 

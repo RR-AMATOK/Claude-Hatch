@@ -1,7 +1,8 @@
 /**
- * levelup-flash — 10 frames, 30 fps, one-shot → idle-baseline
+ * levelup-flash — 10 frames, 10 fps, one-shot → idle-baseline
  *
  * Every level.up event. Spark appears, radial burst, settle.
+ * 10 fps gives a 1-second visible flash (was 30 fps / 333 ms — imperceptible in the live TUI).
  * Reduced-motion: frames [0, 3, 8] only (3 frames = anticipation/peak/resolution).
  * Source: expanded-frames.md §4.5 Scene 21 + compact-frames.md §4.5
  *
@@ -13,10 +14,10 @@ import type { Scene } from "../types.js";
 export const levelupFlash: Scene = {
   id: "levelup-flash",
   trigger: { kind: "event", event: "levelup" },
-  fps: 30,
+  fps: 10,
   loop: false,
   chainsTo: "idle-baseline",
-  reducedMotionFps: 10,
+  reducedMotionFps: 5,
   reducedMotionFrameIndices: [0, 3, 8],
   frames: [
     {
