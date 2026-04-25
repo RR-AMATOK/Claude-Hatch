@@ -115,6 +115,7 @@ $RECYCLE.BIN/
 *.tape
 !docs/assets/**/*.gif
 !docs/assets/**/*.tape
+!docs/demos/tapes/*.tape
 
 # Package tarballs from local `npm pack` / release dry-runs
 *.tgz
