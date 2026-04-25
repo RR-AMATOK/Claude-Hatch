@@ -86,12 +86,14 @@ There's no "best" egg. None of them are rarer than the others. Pick the one that
 Your pet watches the same signals you do — commits land, tests pass, tokens fly — and responds in real time.
 
 <p align="center">
-  <img src="docs/assets/coding-eat.gif" alt="Pet happily eating a token crumb" width="320">
-  <img src="docs/assets/tests-happy.gif" alt="Pet bouncing when a test suite passes" width="320">
+  <img src="docs/assets/coding-eat.gif" alt="Pet happily eating a token crumb" width="280">
+  <img src="docs/assets/tests-happy.gif" alt="Pet bouncing when a test suite passes" width="280">
+  <img src="docs/assets/xp-flag.gif" alt="Pet briefly sparkles when XP is awarded" width="280">
 </p>
 
 - **commits** → a small meal
 - **tests passing** → a celebration
+- **tokens flowing** → a brief sparkle (`\ * * /`)
 - **a long streak** → a sparkle trail
 - **a fix after an error** → a visible sigh of relief
 - **hours on a hard problem** → it falls asleep next to you
@@ -139,7 +141,11 @@ Higher tiers unlock later: sharper resolution, longer clips, cinematic moments. 
 
 A very, very long way.
 
-The level cap is deliberately, unreasonably distant — a number that a heavy everyday coder takes years to reach. A normal coder, longer than that. Most people will never see it, and that's fine; the point isn't to beat it. The point is that it's there, and every commit moves you a little closer.
+<p align="center">
+  <img src="docs/assets/level-up.gif" alt="Pet flashes a happy face and sparkles when it crosses a level boundary" width="420">
+</p>
+
+The level cap is deliberately, unreasonably distant — a number that a heavy everyday coder takes years to reach. A normal coder, longer than that. Most people will never see it, and that's fine; the point isn't to beat it. The point is that it's there, and every commit moves you a little closer. Each level along the way gets its own brief flash.
 
 What happens when someone does reach the top is a surprise.
 
@@ -174,7 +180,7 @@ Three tenets. No exceptions.
 - **Node.js 20+**, TypeScript (strict), Ink + React for the expanded TUI, a lock-free one-shot renderer for the statusline
 - **Zero runtime network dependencies.** Everything is local files, an atomic write pattern, and a hybrid death-clock that's robust to clock skew and suspend/resume
 - **GIF export** shells out to `vhs` — not an npm dependency; a one-time `brew install`
-- **582+ tests** across state, XP, lifecycle, animations, adoption, rendering, and export
+- **740 tests** across state, XP, lifecycle, animations, adoption, rendering, and export
 
 For the full architecture, read [`docs/architecture.md`](docs/architecture.md). For the frame vocabulary, [`docs/design/compact-frames.md`](docs/design/compact-frames.md) and [`docs/design/expanded-frames.md`](docs/design/expanded-frames.md).
 
@@ -184,11 +190,11 @@ For the full architecture, read [`docs/architecture.md`](docs/architecture.md). 
 
 ```bash
 # from source
-git clone <repo>
-cd hatch
+git clone https://github.com/RR-AMATOK/Claude-Hatch.git glyphling
+cd glyphling
 npm install
 npm run dev    # launches the Ink TUI against ./.dev-state/dev
-npm test       # 582+ tests
+npm test       # 740 tests
 ```
 
 Contributions welcome once we tag `v0.1.0`. Until then, the shape of the API is still moving. Issues and design feedback are open now.
