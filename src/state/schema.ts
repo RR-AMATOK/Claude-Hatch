@@ -155,6 +155,15 @@ export const PetSchema = z
      * No code path writes to it under DEC-020.
      */
     dailyCaps: DailyCapsSchema.optional().default({}),
+    /**
+     * ISO timestamp of the most recent level-up. Set by the XP engine in
+     * applyEvent whenever pet.level increases to a strictly higher value.
+     * The compact renderer's pickScene() uses this to show the level-up
+     * animation for LEVEL_UP_WINDOW_MS (3 s) after the boundary is crossed.
+     * Optional with null default so existing state files (e.g. Bramble's)
+     * parse cleanly without a schema version bump.
+     */
+    lastLevelUpAt: ISO8601Schema.nullable().optional().default(null),
   })
   .refine(
     (p) => {

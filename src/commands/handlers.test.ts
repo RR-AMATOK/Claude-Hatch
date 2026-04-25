@@ -100,6 +100,7 @@ function makePet(level: number, overrides: Partial<Pet> = {}): Pet {
     tombstone: null,
     languageExposure: {},
     dailyCaps: {},
+    lastLevelUpAt: null,
     ...overrides,
   };
 }

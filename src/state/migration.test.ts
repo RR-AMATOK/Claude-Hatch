@@ -59,6 +59,7 @@ function makeBasePet(id: string, xp: number, storedLevel: number): Pet {
     tombstone: null,
     languageExposure: {},
     dailyCaps: {},
+    lastLevelUpAt: null,
   };
 }
 

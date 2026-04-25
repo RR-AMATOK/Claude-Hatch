@@ -282,8 +282,12 @@ export function applyEvent(
   // Step 4: derive new level (caps at LEVEL_CAP)
   const newLevel = levelFromCumXp(newXp);
 
-  // Step 5: emit level.up if level changed
+  // Step 5: emit level.up if level changed; record the timestamp for the renderer.
+  let lastLevelUpAt = pet.lastLevelUpAt ?? null;
+
   if (newLevel > pet.level) {
+    lastLevelUpAt = now;
+
     sideEffects.push({
       id: ulid(),
       type: "level.up",
@@ -324,6 +328,7 @@ export function applyEvent(
     ...pet,
     xp: newXp,
     level: clampedLevel,
+    lastLevelUpAt,
   };
 
   return { pet: updatedPet, sideEffects };

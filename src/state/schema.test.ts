@@ -75,6 +75,7 @@ function makeValidPet(overrides: Partial<Pet> = {}): Pet {
     tombstone: null,
     languageExposure: {},
     dailyCaps: {},
+    lastLevelUpAt: null,
     ...overrides,
   };
 }

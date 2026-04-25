@@ -183,6 +183,7 @@ describe("runWatchDaemon", () => {
           tombstone: null,
           languageExposure: {},
           dailyCaps: {},
+          lastLevelUpAt: null,
         },
       ],
       globals: {
