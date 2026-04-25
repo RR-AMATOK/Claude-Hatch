@@ -66,13 +66,14 @@ export class TokenCollector {
       this.onDelta(delta);
     });
 
-    // Periodic flush timer — emits on the 60s boundary even if under threshold
+    // Periodic flush timer — emits on the 60s boundary even if under threshold.
+    // Kept ref'd so it holds the event loop open even when the chokidar watcher
+    // does not (observed on macOS + iCloud Drive paths: chokidar's `persistent`
+    // flag fails to keep Node alive, so without this ref the daemon exits
+    // silently seconds after "Token collector started").
     this.flushTimer = setInterval(() => {
       void this.maybeEmit(true /* timeTriggered */);
     }, EMIT_INTERVAL_MS);
-
-    // Prevent the interval from keeping the process alive if nothing else is
-    if (this.flushTimer.unref) this.flushTimer.unref();
 
     return async () => {
       // Stop the flush timer
