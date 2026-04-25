@@ -29,11 +29,15 @@ PATTERNS=(
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 # Resolve target list.
+# Avoid `mapfile` — it's bash 4+ only, and macOS ships bash 3.2.
+TARGETS=()
 if [[ $# -gt 0 ]]; then
   TARGETS=("$@")
 else
   # Default: every tracked .tape (works whether or not there are any yet).
-  mapfile -t TARGETS < <(cd "$REPO_ROOT" && git ls-files -- '*.tape' 2>/dev/null || true)
+  while IFS= read -r line; do
+    [[ -n "$line" ]] && TARGETS+=("$line")
+  done < <(cd "$REPO_ROOT" && git ls-files -- '*.tape' 2>/dev/null || true)
 fi
 
 if [[ ${#TARGETS[@]} -eq 0 ]]; then
