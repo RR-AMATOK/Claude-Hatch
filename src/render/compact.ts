@@ -29,9 +29,6 @@ export const REFRESH_MS = 1000;
 /** Hard ceiling: columns per row (narrow tier). */
 const MAX_COLS = 60;
 
-/** Hard ceiling: visible columns per wide silhouette row. */
-const MAX_COLS_WIDE = 18;
-
 /** Hard ceiling: rows per compact frame. */
 const MAX_ROWS = 3;
 
@@ -45,7 +42,7 @@ const LEVEL_CAP = 1024;
 /**
  * Responsive breakpoint tiers for the statusline renderer.
  *   narrow   — cols < 80  (or undefined/non-TTY) — status quo layout
- *   standard — 80 ≤ cols < 140 — 3-row with mood right-anchored
+ *   standard — 80 ≤ cols < 140 — 3-row with mood packed-tight after HUD
  *   wide     — cols ≥ 140 — 4-row with wide silhouette
  */
 export type Tier = "narrow" | "standard" | "wide";
@@ -1017,7 +1014,7 @@ function renderHudLeftGroup(
  * Assemble standard (3-row) or wide (4-row) output.
  *
  * Standard tier (80 ≤ cols < 140) — 3 rows:
- *   Row 1: HUD left group + whitespace padding + mood glyph (right-anchored at cols-2)
+ *   Row 1: HUD left group + " · " + mood glyph (pack-tight, no fill padding)
  *   Row 2: narrow silhouette row 1
  *   Row 3: narrow silhouette row 2
  *
@@ -1026,7 +1023,7 @@ function renderHudLeftGroup(
  *   Row 2: wide silhouette row 1 (art only)
  *   Row 3: wide silhouette row 2 (art only)
  *   Row 4: wide silhouette row 3 + padding to WIDE_HUD_START_COL + HUD left group
- *           + whitespace + mood glyph (right-anchored at cols-2)
+ *           + " · " + mood glyph (pack-tight, no trailing fill)
  *
  * For death/level-up scenes the scene frame content replaces the silhouette rows
  * (padded with blank rows if the frame has fewer rows than the tier requires).
@@ -1043,7 +1040,7 @@ export function assembleWideOutput(
   richGlyphs: boolean,
   totalPets: number,
   petIndex: number,
-  cols: number
+  _cols: number
 ): string {
   const nowMs = Date.now();
   const mood = deriveMood(pet, nowMs);
@@ -1054,31 +1051,24 @@ export function assembleWideOutput(
   const moodGlyph = richGlyphs ? moodDef.emoji : moodDef.ascii;
   const moodColor = PALETTE[moodDef.color];
   const moodStr = mode === "none" ? moodGlyph : colorize(moodGlyph, moodColor, mode);
-  const moodWidth = visibleWidth(moodGlyph); // measure plain glyph
 
   // HUD left group (no mood)
   const hudLeft = renderHudLeftGroup(pet, totalPets, petIndex, mode);
-  const hudLeftWidth = visibleWidth(hudLeft);
 
   /**
-   * Build a HUD row: leftContent + padding to fill up to (cols - moodWidth - 2) + mood
-   * The mood glyph's last visible col = cols - 2 (0-indexed).
-   * visibleWidth of the full row = cols - 1.
+   * Build a HUD row: pack-tight leftContent + " · " + mood.
+   * Mood sits one separator past the last HUD atom — it is no longer
+   * right-anchored to col (cols-2). Avoids dead-space gap when the right
+   * group has only the mood glyph.
    */
-  function buildHudRow(leftContent: string, leftContentWidth: number): string {
-    // Pad from end of leftContent to just before the mood glyph
-    // Target position for mood start: cols - moodWidth - 1 (0-indexed)
-    // so that mood occupies [cols-moodWidth-1 .. cols-2] inclusive.
-    const targetPadEnd = cols - moodWidth - 1;
-    const currentWidth = leftContentWidth;
-    const padLen = Math.max(0, targetPadEnd - currentWidth);
-    return leftContent + " ".repeat(padLen) + moodStr;
+  function buildHudRow(leftContent: string): string {
+    return leftContent + " \u00b7 " + moodStr;
   }
 
   if (tier === "standard") {
     // Standard tier — 3 rows
     // Row 1: HUD row
-    const hudRow = buildHudRow(hudLeft, hudLeftWidth);
+    const hudRow = buildHudRow(hudLeft);
 
     // Rows 2-3: narrow silhouette (or scene art for death/level-up)
     let row2: string;
@@ -1140,8 +1130,7 @@ export function assembleWideOutput(
   const silRow3Width = visibleWidth(artRow3);
   const padToHud = Math.max(0, WIDE_HUD_START_COL - silRow3Width);
   const row4Left = artRow3 + " ".repeat(padToHud) + hudLeft;
-  const row4LeftWidth = visibleWidth(artRow3) + padToHud + hudLeftWidth;
-  const row4 = buildHudRow(row4Left, row4LeftWidth);
+  const row4 = buildHudRow(row4Left);
 
   return artRow0 + "\n" + artRow1 + "\n" + artRow2 + "\n" + row4;
 }

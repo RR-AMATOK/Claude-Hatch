@@ -2,7 +2,7 @@
  * Tests for wide-tier and standard-tier statusline rendering.
  * Covers:
  *   - classifyTier() boundary cases
- *   - assembleWideOutput() at standard tier (3 rows, mood right-anchor)
+ *   - assembleWideOutput() at standard tier (3 rows, mood pack-tight)
  *   - assembleWideOutput() at wide tier (4 rows, silhouette + HUD on row 4)
  *   - All 12 species × stage × scenes at wide tier
  *   - Reduced-motion determinism
@@ -139,16 +139,15 @@ describe("assembleWideOutput — standard tier", () => {
     }
   });
 
-  it("mood glyph ends at exactly col cols-2 (0-indexed) on row 1", () => {
-    // The spec says mood's last visible char is at index cols-2 (0-indexed),
-    // so total visible width of row 1 = cols - 1.
+  it("packs mood tight after HUD with ' · ' separator (no dead space)", () => {
+    // Pack-tight layout: HUD atoms · mood. Mood is no longer right-anchored.
+    // Row width must be ≤ cols and the row must end with the mood glyph.
     const output = assembleWideOutput(pet, "standard", "idle-baseline", 0, "none", false, 1, 0, cols);
     const rows = output.split("\n");
     const hudRow = rows[0]!;
-    const rowWidth = visibleWidth(hudRow);
-    // Last visible char index = rowWidth - 1. Spec: that index = cols - 2.
-    // Therefore rowWidth - 1 = cols - 2 → rowWidth = cols - 1.
-    expect(rowWidth).toBe(cols - 1);
+    expect(visibleWidth(hudRow)).toBeLessThanOrEqual(cols);
+    // Row ends with the mood glyph preceded by " · "
+    expect(hudRow).toMatch(/ \u00b7 :\|$/);
   });
 
   it("HUD row contains pet name and level", () => {
@@ -158,15 +157,11 @@ describe("assembleWideOutput — standard tier", () => {
     expect(hudRow).toContain("Lv");
   });
 
-  it("HUD row does NOT contain mood glyph inline in the left group (it is right-anchored)", () => {
-    // The HUD left group ends before the wide gap — mood is at the far right
-    // We verify mood is at end, not sandwiched between separators in the middle
+  it("mood glyph is the last visible token on the HUD row", () => {
+    // Pack-tight: mood is the LAST 2 chars of the row (preceded by " · ").
     const output = assembleWideOutput(pet, "standard", "idle-baseline", 0, "none", false, 1, 0, cols);
     const hudRow = output.split("\n")[0]!;
-    // The narrow HUD inline has mood after " · " separator near the end of left group.
-    // In standard tier the mood is the LAST 2 chars of the row.
     const lastTwo = hudRow.slice(-2);
-    // content mood glyph = ":|"
     expect(lastTwo).toBe(":|");
   });
 
@@ -175,8 +170,9 @@ describe("assembleWideOutput — standard tier", () => {
     const rows = output.split("\n");
     expect(rows.length).toBe(3);
     const hudRow = rows[0]!;
-    // visibleWidth = cols - 1 = 79
-    expect(visibleWidth(hudRow)).toBe(79);
+    // Pack-tight: width is hudLeft + " · " + mood. Must fit within cols.
+    expect(visibleWidth(hudRow)).toBeLessThanOrEqual(80);
+    expect(hudRow).toMatch(/ \u00b7 :\|$/);
     for (const row of rows) {
       expect(visibleWidth(row)).toBeLessThanOrEqual(80);
     }
@@ -253,11 +249,13 @@ describe("assembleWideOutput — wide tier", () => {
     expect(hudPortion.trimStart()).toContain("Pixel");
   });
 
-  it("mood glyph's last visible col = cols-2 on row 4", () => {
-    // Total visible width of row 4 = cols - 1 (same derivation as standard tier)
+  it("packs mood tight after HUD on row 4 (no dead space)", () => {
+    // Pack-tight: row width is silhouette + padding + HUD + ' · ' + mood.
+    // Width must fit within cols, and the row must end with the mood glyph.
     const output = assembleWideOutput(pet, "wide", "idle-baseline", 0, "none", false, 1, 0, cols);
     const row4 = output.split("\n")[3]!;
-    expect(visibleWidth(row4)).toBe(cols - 1);
+    expect(visibleWidth(row4)).toBeLessThanOrEqual(cols);
+    expect(row4).toMatch(/ \u00b7 :\|$/);
   });
 
   it("HUD row contains pet name and level", () => {
@@ -305,10 +303,11 @@ describe("assembleWideOutput — wide tier", () => {
     expect(rows.length).toBe(4);
   });
 
-  it("mood glyph ends at correct position at 220 cols", () => {
+  it("row 4 fits within cols at 220-col width and ends with mood", () => {
     const output = assembleWideOutput(pet, "wide", "idle-baseline", 0, "none", false, 1, 0, 220);
     const row4 = output.split("\n")[3]!;
-    expect(visibleWidth(row4)).toBe(219); // 220 - 1
+    expect(visibleWidth(row4)).toBeLessThanOrEqual(220);
+    expect(row4).toMatch(/ \u00b7 :\|$/);
   });
 });
 
@@ -445,16 +444,16 @@ describe("assembleWideOutput — color modes", () => {
     expect(output.split("\n").length).toBe(4);
   });
 
-  it("row 4 visibleWidth = cols-1 even with ANSI SGR in ansi256 mode", () => {
+  it("row 4 visibleWidth fits cols even with ANSI SGR in ansi256 mode", () => {
     const output = assembleWideOutput(pet, "wide", "idle-baseline", 0, "ansi256", false, 1, 0, cols);
     const row4 = output.split("\n")[3]!;
-    expect(visibleWidth(row4)).toBe(cols - 1);
+    expect(visibleWidth(row4)).toBeLessThanOrEqual(cols);
   });
 
-  it("standard tier row 1 visibleWidth = cols-1 in ansi256 mode", () => {
+  it("standard tier row 1 visibleWidth fits cols in ansi256 mode", () => {
     const output = assembleWideOutput(pet, "standard", "idle-baseline", 0, "ansi256", false, 1, 0, 100);
     const row1 = output.split("\n")[0]!;
-    expect(visibleWidth(row1)).toBe(99);
+    expect(visibleWidth(row1)).toBeLessThanOrEqual(100);
   });
 });
 
