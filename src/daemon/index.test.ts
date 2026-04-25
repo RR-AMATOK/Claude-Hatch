@@ -184,6 +184,9 @@ describe("runWatchDaemon", () => {
           languageExposure: {},
           dailyCaps: {},
           lastLevelUpAt: null,
+    lastPlayedAt: null,
+    lastHatchedAt: null,
+    lastEvolvedAt: null,
         },
       ],
       globals: {

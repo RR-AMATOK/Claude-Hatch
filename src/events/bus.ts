@@ -35,6 +35,9 @@ export type EventType =
   | "pet.sick"
   | "pet.dying"
   | "pet.died"
+  // Lifecycle milestone events (emitted by AdoptionManager / lifecycle)
+  | "pet.hatched"
+  | "pet.evolved"
   // Adoption events (emitted by AdoptionManager)
   | "pet.adopted"
   // Export events (emitted by GIFExporter — TODO-008)

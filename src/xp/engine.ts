@@ -268,53 +268,91 @@ export function applyEvent(
     return { pet, sideEffects: [] };
   }
 
-  // If the event carries no XP delta, return the pet unchanged.
-  if (event.xpDelta === undefined || event.xpDelta <= 0) {
-    return { pet, sideEffects: [] };
-  }
-
   const sideEffects: GlyphlingEvent[] = [];
   const now = new Date().toISOString();
 
-  // Step 3: add XP
-  const newXp = pet.xp + event.xpDelta;
+  // ---------------------------------------------------------------------------
+  // Timestamp-only updates: set lastXAt for one-shot scene dispatch.
+  // These run even when the event carries no XP delta (e.g. stubbed handlers).
+  // Mirror the lastLevelUpAt pattern used below.
+  // ---------------------------------------------------------------------------
+
+  let timestampOnlyPet: Pet | null = null;
+
+  if (event.type === "pet.fed") {
+    timestampOnlyPet = {
+      ...pet,
+      lastFedAt: event.ts,
+    };
+  } else if (event.type === "pet.played") {
+    timestampOnlyPet = {
+      ...pet,
+      lastPlayedAt: event.ts,
+    };
+  } else if (event.type === "pet.hatched") {
+    timestampOnlyPet = {
+      ...pet,
+      lastHatchedAt: event.ts,
+    };
+  } else if (event.type === "pet.evolved") {
+    timestampOnlyPet = {
+      ...pet,
+      lastEvolvedAt: event.ts,
+    };
+  }
+
+  // If the event carries no XP delta, return the timestamp-updated pet (or
+  // the unchanged pet if this event type doesn't update timestamps).
+  if (event.xpDelta === undefined || event.xpDelta <= 0) {
+    if (timestampOnlyPet !== null) {
+      return { pet: timestampOnlyPet, sideEffects: [] };
+    }
+    return { pet, sideEffects: [] };
+  }
+
+  // Work from the timestamp-updated pet if one was set (e.g. pet.fed also
+  // carries XP); otherwise work from the original pet.
+  const basePet = timestampOnlyPet ?? pet;
+
+  // Step 3: add XP (from basePet which may have updated timestamps)
+  const newXp = basePet.xp + event.xpDelta;
 
   // Step 4: derive new level (caps at LEVEL_CAP)
   const newLevel = levelFromCumXp(newXp);
 
   // Step 5: emit level.up if level changed; record the timestamp for the renderer.
-  let lastLevelUpAt = pet.lastLevelUpAt ?? null;
+  let lastLevelUpAt = basePet.lastLevelUpAt ?? null;
 
-  if (newLevel > pet.level) {
+  if (newLevel > basePet.level) {
     lastLevelUpAt = now;
 
     sideEffects.push({
       id: ulid(),
       type: "level.up",
       ts: now,
-      petId: pet.id,
+      petId: basePet.id,
       source: "xp-engine",
-      payload: { from: pet.level, to: newLevel },
+      payload: { from: basePet.level, to: newLevel },
     });
 
     // Step 7a: GIF unlock thresholds — only emit if crossing the threshold
     // (old level was strictly below, new level is at or above).
-    if (pet.level < 25 && newLevel >= 25) {
-      sideEffects.push(makeUnlockEvent("unlock.gif.tier1", pet.id, now));
+    if (basePet.level < 25 && newLevel >= 25) {
+      sideEffects.push(makeUnlockEvent("unlock.gif.tier1", basePet.id, now));
     }
-    if (pet.level < 250 && newLevel >= 250) {
-      sideEffects.push(makeUnlockEvent("unlock.gif.tier2", pet.id, now));
+    if (basePet.level < 250 && newLevel >= 250) {
+      sideEffects.push(makeUnlockEvent("unlock.gif.tier2", basePet.id, now));
     }
 
     // Step 8: LEVEL_CAP ascension
-    if (pet.level < LEVEL_CAP && newLevel >= LEVEL_CAP) {
-      sideEffects.push(makeUnlockEvent("unlock.gif.tier3", pet.id, now));
+    if (basePet.level < LEVEL_CAP && newLevel >= LEVEL_CAP) {
+      sideEffects.push(makeUnlockEvent("unlock.gif.tier3", basePet.id, now));
       // Ascension marker — renderer checks payload.ascended === true on level.up events
       sideEffects.push({
         id: ulid(),
         type: "level.up",
         ts: now,
-        petId: pet.id,
+        petId: basePet.id,
         source: "xp-engine",
         payload: { ascended: true, level: LEVEL_CAP },
       });
@@ -325,7 +363,7 @@ export function applyEvent(
   const clampedLevel = Math.min(newLevel, LEVEL_CAP);
 
   const updatedPet: Pet = {
-    ...pet,
+    ...basePet,
     xp: newXp,
     level: clampedLevel,
     lastLevelUpAt,

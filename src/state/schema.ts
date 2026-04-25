@@ -164,6 +164,27 @@ export const PetSchema = z
      * parse cleanly without a schema version bump.
      */
     lastLevelUpAt: ISO8601Schema.nullable().optional().default(null),
+    /**
+     * ISO timestamp of the most recent pet.played event. Set by the XP engine
+     * reducer when a pet.played event is applied. Used by selectScene() to
+     * trigger the play-bounce or play-chase scene within the play window.
+     * Optional with null default — backwards-compatible with existing state files.
+     */
+    lastPlayedAt: ISO8601Schema.nullable().optional().default(null),
+    /**
+     * ISO timestamp of when the pet first hatched (pet.hatched event).
+     * Distinct from Pet.hatchedAt which is the adoption-manager field.
+     * Used by selectScene() to show hatch-crack → hatch-emerge during the
+     * hatch window after the event fires.
+     * Optional with null default — backwards-compatible with existing state files.
+     */
+    lastHatchedAt: ISO8601Schema.nullable().optional().default(null),
+    /**
+     * ISO timestamp of the most recent pet.evolved event (life-stage transition).
+     * Used by selectScene() to trigger evolve-shimmer within the evolve window.
+     * Optional with null default — backwards-compatible with existing state files.
+     */
+    lastEvolvedAt: ISO8601Schema.nullable().optional().default(null),
   })
   .refine(
     (p) => {
@@ -267,6 +288,9 @@ export const EventTypeSchema = z.enum([
   "pet.sick",
   "pet.dying",
   "pet.died",
+  // Lifecycle milestone events (emitted by AdoptionManager / lifecycle)
+  "pet.hatched",
+  "pet.evolved",
   // Adoption events (emitted by AdoptionManager)
   "pet.adopted",
   // Export events (emitted by GIFExporter — TODO-008)

@@ -63,6 +63,9 @@ function makePet(xp: number): Pet {
     languageExposure: {},
     dailyCaps: {},
     lastLevelUpAt: null,
+    lastPlayedAt: null,
+    lastHatchedAt: null,
+    lastEvolvedAt: null,
   };
 }
 
