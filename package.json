@@ -39,7 +39,7 @@
     "@types/proper-lockfile": "^4.1.4",
     "@types/react": "^18.3.1",
     "tsx": "^4.19.2",
-    "typescript": "^5.7.3",
+    "typescript": "^6.0.3",
     "vitest": "^2.1.8"
   },
   "engines": {
