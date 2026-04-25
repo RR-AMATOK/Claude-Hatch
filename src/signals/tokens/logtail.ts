@@ -1,0 +1,357 @@
+/**
+ * LogTail TokenSignalSource adapter (architecture §7.3)
+ *
+ * Tails ~/.claude/projects/**\/*.jsonl files and emits TokenDelta records as
+ * new assistant messages appear.
+ *
+ * # Cursor strategy: byte offset per session file
+ *
+ * Each session file gets a cursor stored as a byte offset (number) in
+ * `${GLYPHLING_HOME}/signal-state/tokens.json`, keyed by the absolute file
+ * path. Alternative considered: last-seen `message.id` (string). Byte offset
+ * wins because:
+ *   - No need to track the entire message graph; position in the file
+ *     unambiguously identifies how much we have already consumed.
+ *   - Works even if the upstream format never includes a stable message ID.
+ *   - Survives log-file growth; the chokidar "change" event tells us the file
+ *     grew, and we read from the stored offset forward.
+ *   - Tradeoff: if a session file is truncated or rotated, a stale offset
+ *     > file size causes us to skip processing; we detect this and reset the
+ *     cursor to 0 (treating it as a fresh file).
+ *
+ * # Token field extraction
+ *
+ * Claude Code transcript lines are JSONL objects. An assistant message line
+ * has this shape (confirmed from live transcripts):
+ *
+ *   {
+ *     "type": "assistant",
+ *     "message": {
+ *       "usage": {
+ *         "input_tokens": number,
+ *         "output_tokens": number,
+ *         "cache_creation_input_tokens": number,
+ *         "cache_read_input_tokens": number
+ *       }
+ *     }
+ *   }
+ *
+ * We sum all four fields. Missing fields default to 0. Non-assistant-type
+ * lines are skipped.
+ */
+
+import fs from "fs";
+import os from "os";
+import path from "path";
+import { watch as chokidarWatch, type FSWatcher } from "chokidar";
+import type { TokenDelta, TokenSignalSource, AdapterHealth } from "./adapter.js";
+import type { ISO8601 } from "../../state/schema.js";
+
+// ---------------------------------------------------------------------------
+// Cursor state persisted between runs
+// ---------------------------------------------------------------------------
+
+/**
+ * Map from absolute JSONL file path → byte offset of last-processed byte.
+ * Persisted to ${GLYPHLING_HOME}/signal-state/tokens.json.
+ */
+type CursorMap = Record<string, number>;
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+/**
+ * Override the projects dir for testing. Set GLYPHLING_PROJECTS_DIR to a
+ * controlled tmp directory in tests (same env var used by persistence.ts).
+ */
+function projectsDir(): string {
+  const override = process.env["GLYPHLING_PROJECTS_DIR"];
+  if (override && override.length > 0) return override;
+  return path.join(os.homedir(), ".claude", "projects");
+}
+
+// ---------------------------------------------------------------------------
+// LogTailTokenSignalSource
+// ---------------------------------------------------------------------------
+
+export class LogTailTokenSignalSource implements TokenSignalSource {
+  readonly name = "logtail";
+
+  private readonly cursorFile: string;
+  private watcher: FSWatcher | null = null;
+  private started = false;
+
+  /**
+   * @param signalStateDir Path to ${GLYPHLING_HOME}/signal-state/ (for cursor persistence).
+   */
+  constructor(private readonly signalStateDir: string) {
+    this.cursorFile = path.join(signalStateDir, "tokens.json");
+  }
+
+  /**
+   * Start watching ~/.claude/projects/**\/*.jsonl for new assistant messages.
+   *
+   * Returns a stop function. Calling the stop function closes the watcher and
+   * flushes cursor state.
+   */
+  start(onDelta: (delta: TokenDelta) => void): () => Promise<void> {
+    if (this.started) {
+      throw new Error("[logtail] start() called more than once");
+    }
+    this.started = true;
+
+    const projDir = projectsDir();
+
+    this.watcher = chokidarWatch(`${projDir}/**/*.jsonl`, {
+      persistent: true,
+      ignoreInitial: false, // process existing files on startup to catch up
+      awaitWriteFinish: {
+        stabilityThreshold: 100,
+        pollInterval: 100,
+      },
+      // Ignore dotfiles (not relevant)
+      ignored: /(^|[/\\])\../,
+    });
+
+    // Handle new files and changes identically: read from cursor forward.
+    const handleFile = (filePath: string) => {
+      void this.processFile(filePath, onDelta);
+    };
+
+    this.watcher.on("add", handleFile);
+    this.watcher.on("change", handleFile);
+
+    // Non-fatal: log errors but don't crash
+    this.watcher.on("error", (err) => {
+      process.stderr.write(`[glyphling/logtail] chokidar error: ${String(err)}\n`);
+    });
+
+    return async () => {
+      if (this.watcher) {
+        await this.watcher.close();
+        this.watcher = null;
+      }
+    };
+  }
+
+  async health(): Promise<AdapterHealth> {
+    const projDir = projectsDir();
+    try {
+      await fs.promises.access(projDir);
+      return {
+        ok: true,
+        mode: "logtail",
+        detail: `Tailing ${projDir}/**/*.jsonl`,
+      };
+    } catch {
+      return {
+        ok: false,
+        mode: "logtail",
+        detail: `Projects directory not found: ${projDir}`,
+      };
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Internal: process one file from its cursor forward
+  // Exposed as a public method so tests can drive file processing directly
+  // without relying on chokidar timing (which is unreliable on iCloud mounts).
+  // ---------------------------------------------------------------------------
+
+  async processFile(
+    filePath: string,
+    onDelta: (delta: TokenDelta) => void
+  ): Promise<void> {
+    // Read current cursors
+    const cursors = await this.loadCursors();
+    const savedOffset = cursors[filePath] ?? 0;
+
+    // Get current file size
+    let stat: fs.Stats;
+    try {
+      stat = await fs.promises.stat(filePath);
+    } catch {
+      return; // File gone between watcher event and now
+    }
+
+    // If file shrunk (truncated/rotated), reset cursor to 0
+    const startOffset = savedOffset > stat.size ? 0 : savedOffset;
+
+    if (startOffset >= stat.size) {
+      return; // Nothing new to read
+    }
+
+    // Read from startOffset to end
+    const buffer = Buffer.allocUnsafe(stat.size - startOffset);
+    let fd: fs.promises.FileHandle | null = null;
+    try {
+      fd = await fs.promises.open(filePath, "r");
+      const { bytesRead } = await fd.read(buffer, 0, buffer.length, startOffset);
+      if (bytesRead === 0) return;
+
+      const text = buffer.subarray(0, bytesRead).toString("utf8");
+      const newOffset = startOffset + Buffer.byteLength(text, "utf8");
+
+      // Parse lines
+      const lines = text.split("\n");
+      let totalTokens = 0;
+      let latestTs: ISO8601 | null = null;
+      let model: string | undefined;
+      let sessionId: string | undefined;
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (trimmed.length === 0) continue;
+
+        const delta = parseTranscriptLine(trimmed);
+        if (delta === null) continue;
+
+        totalTokens += delta.tokens;
+        latestTs = delta.ts;
+        if (delta.model) model = delta.model;
+        if (delta.session) sessionId = delta.session;
+      }
+
+      // Save updated cursor regardless of whether we found tokens
+      cursors[filePath] = newOffset;
+      await this.saveCursors(cursors);
+
+      // Emit delta if we found any tokens
+      if (totalTokens > 0 && latestTs !== null) {
+        const delta: TokenDelta = { ts: latestTs, tokens: totalTokens };
+        if (model !== undefined) delta.model = model;
+        if (sessionId !== undefined) delta.session = sessionId;
+        onDelta(delta);
+      }
+    } finally {
+      await fd?.close();
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Internal: cursor persistence
+  // ---------------------------------------------------------------------------
+
+  private async loadCursors(): Promise<CursorMap> {
+    try {
+      const raw = await fs.promises.readFile(this.cursorFile, "utf8");
+      const parsed: unknown = JSON.parse(raw);
+      if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+        // Validate: all values must be non-negative numbers
+        const map: CursorMap = {};
+        for (const [k, v] of Object.entries(parsed)) {
+          if (typeof v === "number" && v >= 0) {
+            map[k] = v;
+          }
+        }
+        return map;
+      }
+    } catch {
+      // Missing or corrupt — start fresh
+    }
+    return {};
+  }
+
+  private async saveCursors(cursors: CursorMap): Promise<void> {
+    await fs.promises.mkdir(this.signalStateDir, { recursive: true, mode: 0o700 });
+    const tmp = this.cursorFile + ".tmp." + process.pid;
+    try {
+      await fs.promises.writeFile(tmp, JSON.stringify(cursors, null, 2) + "\n", {
+        encoding: "utf8",
+        mode: 0o600,
+      });
+      await fs.promises.rename(tmp, this.cursorFile);
+    } finally {
+      // Clean up tmp on failure (best-effort)
+      try {
+        await fs.promises.unlink(tmp);
+      } catch {
+        // Already renamed or never created — fine
+      }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Transcript line parser
+// ---------------------------------------------------------------------------
+
+/**
+ * Extract token usage from a single JSONL line.
+ * Returns null if the line is not an assistant message with usage data.
+ *
+ * Expected shape (confirmed from live ~/.claude/projects/**\/*.jsonl):
+ * {
+ *   "type": "assistant",
+ *   "message": {
+ *     "id": "msg_...",
+ *     "model": "claude-...",
+ *     "usage": {
+ *       "input_tokens": number,
+ *       "output_tokens": number,
+ *       "cache_creation_input_tokens": number,
+ *       "cache_read_input_tokens": number
+ *     }
+ *   },
+ *   "timestamp": "2026-...",
+ *   "sessionId": "..."
+ * }
+ */
+export function parseTranscriptLine(
+  line: string
+): { tokens: number; ts: ISO8601; model?: string; session?: string } | null {
+  let obj: unknown;
+  try {
+    obj = JSON.parse(line);
+  } catch {
+    return null;
+  }
+
+  if (obj === null || typeof obj !== "object" || Array.isArray(obj)) return null;
+
+  const rec = obj as Record<string, unknown>;
+
+  // Must be an assistant message
+  if (rec["type"] !== "assistant") return null;
+
+  const msg = rec["message"];
+  if (msg === null || typeof msg !== "object" || Array.isArray(msg)) return null;
+
+  const msgRec = msg as Record<string, unknown>;
+  const usage = msgRec["usage"];
+  if (usage === null || typeof usage !== "object" || Array.isArray(usage)) return null;
+
+  const u = usage as Record<string, unknown>;
+
+  const inputTokens = typeof u["input_tokens"] === "number" ? u["input_tokens"] : 0;
+  const outputTokens = typeof u["output_tokens"] === "number" ? u["output_tokens"] : 0;
+  const cacheCreate =
+    typeof u["cache_creation_input_tokens"] === "number"
+      ? u["cache_creation_input_tokens"]
+      : 0;
+  const cacheRead =
+    typeof u["cache_read_input_tokens"] === "number"
+      ? u["cache_read_input_tokens"]
+      : 0;
+
+  const tokens = inputTokens + outputTokens + cacheCreate + cacheRead;
+  if (tokens <= 0) return null;
+
+  // Timestamp: prefer the top-level timestamp field
+  const ts =
+    typeof rec["timestamp"] === "string"
+      ? rec["timestamp"]
+      : new Date().toISOString();
+
+  const model =
+    typeof msgRec["model"] === "string" ? msgRec["model"] : undefined;
+
+  const session =
+    typeof rec["sessionId"] === "string" ? rec["sessionId"] : undefined;
+
+  const result: { tokens: number; ts: ISO8601; model?: string; session?: string } = { tokens, ts };
+  if (model !== undefined) result.model = model;
+  if (session !== undefined) result.session = session;
+  return result;
+}
