@@ -271,29 +271,47 @@ describe("Mechanism 2 — transcript cross-check", () => {
     const config = await makeTmpConfig();
     await writeState(config, makeEmptyState());
 
-    // Directly write a tokens.delta event with a fake transcriptLineHash
-    const fakeHash = sha256("this line does not exist anywhere");
-    const event = makeTestEvent({
-      id: "tokens-fabricated",
-      type: "tokens.delta",
-      xpDelta: 100,
-      transcriptLineHash: fakeHash,
-    });
-    // Write directly to log (bypassing appendEvent so the transcriptLineHash is preserved)
-    await fs.promises.mkdir(config.stateHome, { recursive: true });
-    await fs.promises.appendFile(
-      config.paths.eventsLog,
-      JSON.stringify({ ...event, prevHash: "" }) + "\n",
-      "utf8"
+    // Point the transcript cache at an empty tmp dir so the check actually
+    // runs (without override, a missing ~/.claude/projects/ on CI would make
+    // the cache null → pass-through → no rejection).
+    const projectsDir = await fs.promises.mkdtemp(
+      path.join(os.tmpdir(), "glyphling-projects-")
     );
+    tmpDirs.push(projectsDir);
+    const origProjectsDir = process.env["GLYPHLING_PROJECTS_DIR"];
+    process.env["GLYPHLING_PROJECTS_DIR"] = projectsDir;
 
-    // Non-strict mode (no env var): should still replay the event but include a rejection
-    const result = await replayEvents(config, 0, "");
-    expect(result.chainBroken).toBe(false);
-    const rejections = result.events.filter((e) => e.type === "signal.rejected");
-    expect(rejections.length).toBeGreaterThanOrEqual(1);
-    const rejection = rejections[0]!;
-    expect((rejection.payload as { reason: string }).reason).toBe("transcript.missing");
+    try {
+      // Directly write a tokens.delta event with a fake transcriptLineHash
+      const fakeHash = sha256("this line does not exist anywhere");
+      const event = makeTestEvent({
+        id: "tokens-fabricated",
+        type: "tokens.delta",
+        xpDelta: 100,
+        transcriptLineHash: fakeHash,
+      });
+      // Write directly to log (bypassing appendEvent so the transcriptLineHash is preserved)
+      await fs.promises.mkdir(config.stateHome, { recursive: true });
+      await fs.promises.appendFile(
+        config.paths.eventsLog,
+        JSON.stringify({ ...event, prevHash: "" }) + "\n",
+        "utf8"
+      );
+
+      // Non-strict mode (no env var): should still replay the event but include a rejection
+      const result = await replayEvents(config, 0, "");
+      expect(result.chainBroken).toBe(false);
+      const rejections = result.events.filter((e) => e.type === "signal.rejected");
+      expect(rejections.length).toBeGreaterThanOrEqual(1);
+      const rejection = rejections[0]!;
+      expect((rejection.payload as { reason: string }).reason).toBe("transcript.missing");
+    } finally {
+      if (origProjectsDir === undefined) {
+        delete process.env["GLYPHLING_PROJECTS_DIR"];
+      } else {
+        process.env["GLYPHLING_PROJECTS_DIR"] = origProjectsDir;
+      }
+    }
   });
 
   it("tokens.delta without transcriptLineHash is applied in strict mode (no rejection)", async () => {

@@ -675,9 +675,17 @@ export async function checkRecoveryNeeded(config: Config): Promise<boolean> {
  *
  * Returns null if the projects directory does not exist (dev/test environment),
  * indicating all checks should be skipped (pass-through).
+ *
+ * `GLYPHLING_PROJECTS_DIR` overrides the default location. Used by integration
+ * tests to point the cache at a deterministic empty tmp dir, and by users
+ * whose Claude Code data lives outside `~/.claude`.
  */
 async function buildTranscriptHashCache(): Promise<Set<string> | null> {
-  const projectsDir = path.join(os.homedir(), ".claude", "projects");
+  const override = process.env["GLYPHLING_PROJECTS_DIR"];
+  const projectsDir =
+    override && override.length > 0
+      ? override
+      : path.join(os.homedir(), ".claude", "projects");
 
   try {
     await fs.promises.access(projectsDir);
