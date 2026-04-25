@@ -21,6 +21,7 @@ import path from "path";
 import lockfile from "proper-lockfile";
 import type { Config } from "../config/env.js";
 import { readState } from "../state/persistence.js";
+import { applyDec020Migration } from "../state/migration.js";
 import { LogTailTokenSignalSource } from "../signals/tokens/logtail.js";
 import { TokenCollector } from "../signals/tokens/collector.js";
 
@@ -134,11 +135,27 @@ export async function runWatchDaemon(config: Config): Promise<number> {
 
   await daemonLog(logFile, "INFO", "Daemon lock acquired");
 
-  // Read active pet ID from state
+  // Read active pet ID from state. Run the DEC-020 Option A migration on
+  // the loaded state — idempotent, only writes if a level changes. The
+  // daemon is the canonical writer-path bootstrap for existing pets, so
+  // running migration here covers the common upgrade case (user installs
+  // post-DEC-020 and restarts the watcher).
   let petId: string | null = null;
   try {
     const state = await readState(config);
-    petId = state?.globals.activePetId ?? null;
+    if (state !== null) {
+      const result = await applyDec020Migration(config, state);
+      if (result.regraded.size > 0) {
+        for (const [pid, change] of result.regraded) {
+          await daemonLog(
+            logFile,
+            "INFO",
+            `pet.regrade ${pid}: L${change.fromLevel} → L${change.toLevel} (DEC-020 migration)`
+          );
+        }
+      }
+      petId = result.state.globals.activePetId ?? null;
+    }
     await daemonLog(logFile, "INFO", `Active pet: ${petId ?? "(none)"}`);
   } catch (err) {
     await daemonLog(logFile, "WARN", `Could not read state: ${String(err)}`);

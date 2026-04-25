@@ -139,6 +139,94 @@ describe("runWatchDaemon", () => {
     void daemonPromise.catch(() => undefined);
   });
 
+  it("runs DEC-020 migration on startup (regression: applyDec020Migration must be wired)", async () => {
+    // Fixture: a pet with stale (xp=6000, level=17 from old DEC-004 curve).
+    // After migration the level under DEC-020 must be 31.
+    const { writeState } = await import("../state/persistence.js");
+    const config = buildConfig(tmpDir);
+    const now = new Date().toISOString();
+    const state = {
+      schemaVersion: 1 as const,
+      createdAt: now,
+      updatedAt: now,
+      pets: [
+        {
+          id: "01TEST00000000000000000000",
+          schemaVersion: 1 as const,
+          eggType: "shard" as const,
+          name: "Bramble",
+          createdAt: now,
+          hatchedAt: now,
+          lastFedAt: null,
+          lastInteractionAt: now,
+          xp: 6000,
+          level: 17, // stale per DEC-004 curve
+          personality: {
+            dominant: "Energetic" as const,
+            weights: {
+              Stoic: 0.11,
+              Friendly: 0.11,
+              Pragmatic: 0.11,
+              Energetic: 0.27,
+              Gruff: 0.10,
+              Philosophical: 0.10,
+              Paranoid: 0.10,
+              Curious: 0.10,
+            },
+            lockedAt: now,
+            lastRefreshAt: now,
+          },
+          pauseIntervals: [],
+          accumulatedNeglectSeconds: 0,
+          lastTickAt: now,
+          diedAt: null,
+          tombstone: null,
+          languageExposure: {},
+          dailyCaps: {},
+        },
+      ],
+      globals: {
+        activePetId: "01TEST00000000000000000000",
+        unlocks: { gifTier1: false, gifTier2: false, gifTier3: false, adoption: false },
+        eventsCursor: 0,
+        eventsHead: "",
+        lastEventAt: 0,
+      },
+    };
+    await writeState(config, state);
+
+    // Mock process.exit, send SIGTERM after 300ms, wait for shutdown.
+    const origExit = process.exit.bind(process);
+    let exitCalled = false;
+    process.exit = (() => {
+      exitCalled = true;
+    }) as typeof process.exit;
+    const daemonPromise = runWatchDaemon(config);
+    setTimeout(() => process.emit("SIGTERM"), 300);
+    await new Promise<void>((resolve) => {
+      const check = setInterval(() => {
+        if (exitCalled) {
+          clearInterval(check);
+          resolve();
+        }
+      }, 50);
+      setTimeout(() => {
+        clearInterval(check);
+        resolve();
+      }, 3_000);
+    });
+    process.exit = origExit;
+    void daemonPromise.catch(() => undefined);
+
+    // Migration should have rewritten the state file with the corrected level.
+    const stateAfter = JSON.parse(
+      await fs.promises.readFile(path.join(tmpDir, "state.json"), "utf8")
+    ) as { pets: Array<{ id: string; level: number; xp: number }> };
+    const pet = stateAfter.pets.find((p) => p.id === "01TEST00000000000000000000")!;
+    expect(pet.xp).toBe(6000); // XP preserved
+    expect(pet.level).toBe(31); // recomputed under DEC-020 golden curve
+  }, 10_000);
+
   it("stays alive past startup (regression: collector flushTimer must not be unref'd)", async () => {
     // Spawns the real bin in a subprocess and verifies it is still alive
     // 1.5 s after launch. Before the keep-alive fix, the daemon exited
