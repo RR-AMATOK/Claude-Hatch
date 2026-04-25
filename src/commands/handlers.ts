@@ -18,6 +18,7 @@ import type { SceneId } from "../../animations/types.js";
 import { ALL_SCENE_IDS } from "../../animations/types.js";
 import { TIER_SPECS } from "../export/tiers.js";
 import { levelFromCumXp } from "../xp/engine.js";
+import { safeForLog } from "../util/lang.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -114,6 +115,157 @@ export function dispatchCommand(
 }
 
 // ---------------------------------------------------------------------------
+// hatch command — async handler (first-run primary-pet bootstrap)
+// ---------------------------------------------------------------------------
+
+const NAME_MAX_LEN = 32;
+
+/**
+ * Implements `glyphling hatch <eggType> [name]` — primary-pet bootstrap.
+ *
+ * This is the first-run path that creates state.json + the primary pet.
+ * It bypasses canAdopt() (which gates *secondary* adoptions on L73 + 7d) and
+ * is only valid when state has zero pets. Subsequent pets must go through
+ * the gated `adopt` flow.
+ *
+ * The created pet is set as activePetId so the statusline picks it up
+ * immediately on the next render.
+ */
+export async function hatchCommand(
+  args: string[],
+  ctx: CommandContext
+): Promise<CommandResult> {
+  const { config } = ctx;
+
+  // Pull out --xp <n> flag (may appear anywhere); collect remaining as positional.
+  let initialXp: number | null = null;
+  const positional: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!;
+    if (arg === "--xp") {
+      const next = args[i + 1];
+      if (next === undefined) {
+        return { ok: false, error: "--xp requires a number" };
+      }
+      const parsed = Number(next);
+      if (!Number.isInteger(parsed) || parsed < 0) {
+        return { ok: false, error: `--xp must be a non-negative integer, got: ${next}` };
+      }
+      initialXp = parsed;
+      i++; // consume the value
+    } else if (arg.startsWith("--xp=")) {
+      const valueStr = arg.slice("--xp=".length);
+      const parsed = Number(valueStr);
+      if (!Number.isInteger(parsed) || parsed < 0) {
+        return { ok: false, error: `--xp must be a non-negative integer, got: ${valueStr}` };
+      }
+      initialXp = parsed;
+    } else {
+      positional.push(arg);
+    }
+  }
+
+  const eggType = positional[0]?.toLowerCase();
+  const rawName = positional.slice(1).join(" ").trim();
+
+  if (!eggType) {
+    return {
+      ok: false,
+      error: `hatch requires an egg type: ${VALID_EGG_TYPES.join(" | ")}`,
+    };
+  }
+
+  if (!(VALID_EGG_TYPES as readonly string[]).includes(eggType)) {
+    return {
+      ok: false,
+      error: `unknown egg type "${eggType}". Valid types: ${VALID_EGG_TYPES.join(", ")}`,
+    };
+  }
+
+  let name: string | null = null;
+  if (rawName.length > 0) {
+    if (rawName.length > NAME_MAX_LEN) {
+      return {
+        ok: false,
+        error: `name too long (${rawName.length} chars); max ${NAME_MAX_LEN}`,
+      };
+    }
+    name = rawName;
+  }
+
+  const stateBefore = await readState(config);
+
+  if (stateBefore !== null && stateBefore.pets.length > 0) {
+    return {
+      ok: false,
+      error: "primary pet already exists. Use 'adopt' for additional pets.",
+    };
+  }
+
+  const baseState = stateBefore ?? {
+    schemaVersion: 1 as const,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    pets: [],
+    globals: {
+      activePetId: null,
+      unlocks: { gifTier1: false, gifTier2: false, gifTier3: false, adoption: false },
+      eventsCursor: 0,
+      eventsHead: "",
+      lastEventAt: 0,
+    },
+  };
+
+  const result = adopt(baseState, { eggType: eggType as EggType });
+
+  // Apply name, optional --xp override (and derived level), and set as active pet.
+  const overrideLevel =
+    initialXp !== null ? levelFromCumXp(initialXp) : null;
+  const namedPets = result.state.pets.map((p) =>
+    p.id === result.pet.id
+      ? {
+          ...p,
+          name,
+          ...(initialXp !== null ? { xp: initialXp } : {}),
+          ...(overrideLevel !== null ? { level: overrideLevel } : {}),
+        }
+      : p
+  );
+  const finalState = {
+    ...result.state,
+    pets: namedPets,
+    globals: { ...result.state.globals, activePetId: result.pet.id },
+  };
+
+  try {
+    const lastIdx = result.events.length - 1;
+    for (let i = 0; i < result.events.length; i++) {
+      const event = result.events[i]!;
+      if (i === lastIdx) {
+        await appendEvent(config, event, () => finalState);
+      } else {
+        await appendEvent(config, event);
+      }
+    }
+  } catch (err) {
+    return {
+      ok: false,
+      error: `hatch failed (event log): ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+
+  const displayName = name ?? result.pet.id;
+  const xpSuffix =
+    initialXp !== null && overrideLevel !== null
+      ? `, xp: ${initialXp}, level: ${overrideLevel}`
+      : "";
+  return {
+    ok: true,
+    message: `hatched ${displayName} (egg: ${eggType}, personality: ${result.pet.personality.dominant}${xpSuffix}). Reload Claude Code to see the pet in your statusline.`,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // adopt command — async handler
 // ---------------------------------------------------------------------------
 
@@ -172,7 +324,8 @@ export async function adoptCommand(
   // Gate check (pre-flight)
   const gateResult = canAdopt(stateBefore);
   if (!gateResult.ok) {
-    process.stderr.write(`[glyphling] adopt denied: ${gateResult.reason}\n`);
+    // SEC-008: reason comes from internal logic (not user input), but log safely anyway
+    process.stderr.write(`[glyphling] adopt denied: ${safeForLog(gateResult.reason)}\n`);
     return { ok: false, error: gateResult.reason };
   }
 
@@ -347,11 +500,27 @@ export async function exportCommand(
     envVars["GLYPHLING_HOME"] = config.stateHome;
   }
 
-  // Determine glyphlingBin: prefer tsx for dev, compiled binary for prod.
-  const glyphlingBin = process.env["GLYPHLING_BIN"] ?? "glyphling";
 
+  // SEC-007: Validate GLYPHLING_BIN against a safe allowlist of characters.
+  // An attacker-controlled GLYPHLING_BIN could inject shell commands into the
+  // tape's Type directive. We allow only path-safe chars and reject anything else.
+  const rawBin = process.env["GLYPHLING_BIN"];
+  const SAFE_BIN_RE = /^[a-zA-Z0-9._/\\-]+$/;
+  let glyphlingBin: string;
+  if (rawBin === undefined || rawBin === "") {
+    glyphlingBin = "glyphling";
+  } else if (SAFE_BIN_RE.test(rawBin)) {
+    glyphlingBin = rawBin;
+  } else {
+    return {
+      ok: false,
+      error: `GLYPHLING_BIN contains unsafe characters: ${JSON.stringify(rawBin)}`,
+    };
+  }
+
+  // SEC-008: pet.name is user-supplied; use safeForLog to prevent control-char injection
   process.stderr.write(
-    `[glyphling] starting Tier ${tier} export for "${pet.name ?? pet.id}"...\n`
+    `[glyphling] starting Tier ${tier} export for ${safeForLog(pet.name ?? pet.id)}...\n`
   );
 
   const result = await exportGif({

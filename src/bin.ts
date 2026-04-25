@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 /**
  * Thin dispatch shim — primary bin entry point (package.json "glyphling" bin).
  *

@@ -11,16 +11,17 @@
 import React from "react";
 import { render } from "ink";
 import { App } from "./render/App.js";
-import { resolveStateHome } from "./config/env.js";
+import { resolveStateHome, assertStateNotSymlinked } from "./config/env.js";
 import { renderOnce } from "./render/statusline.js";
 import { captureMain } from "./render/capture.js";
-import { exportCommand } from "./commands/handlers.js";
+import { exportCommand, hatchCommand } from "./commands/handlers.js";
 
 export async function main(argv: string[]): Promise<number> {
   // Resolve state home — will throw if DEC-008 guard trips.
   const config = resolveStateHome();
 
   // DEC-016: one-shot statusline renderer — must dispatch before Ink boots.
+  // Statusline is a read-only path; symlink check is not required (DEC-016 §13 risk #6).
   if (argv[0] === "statusline") {
     return renderOnce(config);
   }
@@ -30,6 +31,9 @@ export async function main(argv: string[]): Promise<number> {
   if (argv[0] === "capture") {
     return captureMain(argv.slice(1));
   }
+
+  // SEC-006: All writer paths check that state files are not symlinks.
+  assertStateNotSymlinked(config);
 
   // One-shot export subcommand — `glyphling export <tier> [sceneId]`
   if (argv[0] === "export") {
@@ -43,13 +47,36 @@ export async function main(argv: string[]): Promise<number> {
     }
   }
 
+  // First-run primary-pet bootstrap — `glyphling hatch <eggType> [name]`
+  if (argv[0] === "hatch") {
+    const result = await hatchCommand(argv.slice(1), { config });
+    if (result.ok) {
+      process.stdout.write((result.message ?? "Hatched.") + "\n");
+      return 0;
+    } else {
+      process.stderr.write(`[glyphling] ${result.error}\n`);
+      return 1;
+    }
+  }
+
   void argv; // TODO: parse --help, --version, subcommands
 
-  const { waitUntilExit } = render(<App config={config} />);
+  const { waitUntilExit, unmount } = render(<App config={config} />);
 
-  // Graceful shutdown
-  process.on("SIGINT", () => process.exit(0));
-  process.on("SIGTERM", () => process.exit(0));
+  // SEC-010: Graceful teardown on SIGINT/SIGTERM.
+  // Force-exit safety net at 500 ms ensures we never hang on a stuck unmount;
+  // normal path lets `waitUntilExit()` resolve naturally after `unmount()`.
+  const gracefulExit = () => {
+    const force = setTimeout(() => process.exit(1), 500);
+    force.unref();
+    try {
+      unmount();
+    } catch {
+      // ignore — Ink already torn down
+    }
+  };
+  process.on("SIGINT", gracefulExit);
+  process.on("SIGTERM", gracefulExit);
 
   await waitUntilExit();
   return 0;
