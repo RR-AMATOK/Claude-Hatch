@@ -5,6 +5,14 @@
  * relying on chokidar events — chokidar can be unreliable on iCloud/network
  * mounts (architecture §13.2). processFile() is the real logic; watcher is
  * just the trigger mechanism.
+ *
+ * Bug A (start-at-tail) regression tests:
+ *   - First processFile call on a pre-existing file emits ZERO deltas.
+ *   - Appending new bytes after first observation emits only those bytes.
+ *
+ * Bug B (cache token exclusion) regression tests:
+ *   - parseTranscriptLine counts only input_tokens + output_tokens.
+ *   - cache_creation_input_tokens and cache_read_input_tokens are excluded.
  */
 
 import fs from "fs";
@@ -58,16 +66,18 @@ describe("parseTranscriptLine", () => {
     expect(parseTranscriptLine(line)).toBeNull();
   });
 
-  it("sums all four token fields", () => {
+  it("Bug B: counts ONLY input_tokens + output_tokens, excludes cache fields", () => {
+    // 1000 input + 500 output + 5_000_000 cache_read + 200_000 cache_creation
+    // Expected: 1500 (NOT 5_201_500)
     const line = JSON.stringify({
       type: "assistant",
       message: {
         model: "claude-opus-4-7",
         usage: {
-          input_tokens: 100,
-          output_tokens: 200,
-          cache_creation_input_tokens: 300,
-          cache_read_input_tokens: 400,
+          input_tokens: 1000,
+          output_tokens: 500,
+          cache_creation_input_tokens: 200_000,
+          cache_read_input_tokens: 5_000_000,
         },
       },
       timestamp: "2026-04-24T10:00:00.000Z",
@@ -75,7 +85,45 @@ describe("parseTranscriptLine", () => {
     });
     const result = parseTranscriptLine(line);
     expect(result).not.toBeNull();
-    expect(result!.tokens).toBe(1000);
+    expect(result!.tokens).toBe(1500);
+    expect(result!.ts).toBe("2026-04-24T10:00:00.000Z");
+    expect(result!.model).toBe("claude-opus-4-7");
+    expect(result!.session).toBe("sess-abc");
+  });
+
+  it("Bug B: returns null when only cache fields are non-zero (input+output both zero)", () => {
+    const line = JSON.stringify({
+      type: "assistant",
+      message: {
+        usage: {
+          input_tokens: 0,
+          output_tokens: 0,
+          cache_creation_input_tokens: 100_000,
+          cache_read_input_tokens: 500_000,
+        },
+      },
+      timestamp: "2026-04-24T10:00:00.000Z",
+    });
+    // After Bug B fix, tokens = 0 → should return null
+    expect(parseTranscriptLine(line)).toBeNull();
+  });
+
+  it("sums input_tokens + output_tokens (no cache fields present)", () => {
+    const line = JSON.stringify({
+      type: "assistant",
+      message: {
+        model: "claude-opus-4-7",
+        usage: {
+          input_tokens: 100,
+          output_tokens: 200,
+        },
+      },
+      timestamp: "2026-04-24T10:00:00.000Z",
+      sessionId: "sess-abc",
+    });
+    const result = parseTranscriptLine(line);
+    expect(result).not.toBeNull();
+    expect(result!.tokens).toBe(300);
     expect(result!.ts).toBe("2026-04-24T10:00:00.000Z");
     expect(result!.model).toBe("claude-opus-4-7");
     expect(result!.session).toBe("sess-abc");
@@ -168,63 +216,125 @@ describe("LogTailTokenSignalSource.processFile", () => {
     expect(h.ok).toBe(false);
   });
 
-  it("processFile emits a delta for a JSONL file with token data", async () => {
-    const jsonlFile = path.join(tmpDir, "session.jsonl");
-    const line = JSON.stringify({
-      type: "assistant",
-      message: {
-        model: "claude-opus-4-7",
-        usage: { input_tokens: 1000, output_tokens: 500 },
-      },
-      timestamp: "2026-04-24T10:00:00.000Z",
-      sessionId: "sess-abc",
-    });
-    await fs.promises.writeFile(jsonlFile, line + "\n", "utf8");
+  // ---------------------------------------------------------------------------
+  // Bug A: start-at-tail — first encounter of a file emits ZERO deltas
+  // ---------------------------------------------------------------------------
+
+  it("Bug A: first processFile call on a pre-existing file emits ZERO deltas (start-at-tail)", async () => {
+    // Simulate 3 pre-existing JSONL files totalling 10_000 tokens each
+    const projectsDir = path.join(tmpDir, "projects", "test-project");
+    await fs.promises.mkdir(projectsDir, { recursive: true });
+
+    const files: string[] = [];
+    for (let i = 0; i < 3; i++) {
+      const filePath = path.join(projectsDir, `session-${i}.jsonl`);
+      const lines: string[] = [];
+      // Each file: 10 assistant messages of 1000 tokens each = 10_000 tokens
+      for (let j = 0; j < 10; j++) {
+        lines.push(
+          JSON.stringify({
+            type: "assistant",
+            message: { usage: { input_tokens: 500, output_tokens: 500 } },
+            timestamp: "2026-04-24T10:00:00.000Z",
+          })
+        );
+      }
+      await fs.promises.writeFile(filePath, lines.join("\n") + "\n", "utf8");
+      files.push(filePath);
+    }
 
     const deltas: TokenDelta[] = [];
     const source = new LogTailTokenSignalSource(signalStateDir);
-    await source.processFile(jsonlFile, (d) => deltas.push(d));
 
+    // First processFile on each pre-existing file: MUST emit 0 deltas
+    for (const f of files) {
+      await source.processFile(f, (d) => deltas.push(d));
+    }
+    expect(deltas.length).toBe(0);
+  });
+
+  it("Bug A: appending to a file after first observation emits only the appended tokens", async () => {
+    const jsonlFile = path.join(tmpDir, "session-append.jsonl");
+    // Write 10_000 tokens of pre-existing content
+    const existing = JSON.stringify({
+      type: "assistant",
+      message: { usage: { input_tokens: 5000, output_tokens: 5000 } },
+      timestamp: "2026-04-24T10:00:00.000Z",
+    });
+    await fs.promises.writeFile(jsonlFile, existing + "\n", "utf8");
+
+    const deltas: TokenDelta[] = [];
+    const source = new LogTailTokenSignalSource(signalStateDir);
+
+    // First call: start-at-tail → 0 deltas
+    await source.processFile(jsonlFile, (d) => deltas.push(d));
+    expect(deltas.length).toBe(0);
+
+    // Append 5_000 new tokens
+    const appended = JSON.stringify({
+      type: "assistant",
+      message: { usage: { input_tokens: 2500, output_tokens: 2500 } },
+      timestamp: "2026-04-24T10:05:00.000Z",
+    });
+    await fs.promises.appendFile(jsonlFile, appended + "\n", "utf8");
+
+    // Second call: must pick up ONLY the appended 5000 tokens
+    await source.processFile(jsonlFile, (d) => deltas.push(d));
     expect(deltas.length).toBe(1);
-    expect(deltas[0]!.tokens).toBe(1500);
-    expect(deltas[0]!.session).toBe("sess-abc");
+    expect(deltas[0]!.tokens).toBe(5000);
   });
 
   it("does not double-count on second processFile call (cursor persists)", async () => {
     const jsonlFile = path.join(tmpDir, "session2.jsonl");
+    // Start with an empty file so the first call sets cursor to 0 (no history)
+    await fs.promises.writeFile(jsonlFile, "", "utf8");
+
+    const deltas: TokenDelta[] = [];
+    const source = new LogTailTokenSignalSource(signalStateDir);
+
+    // First pass on empty file: sets cursor to 0, no deltas
+    await source.processFile(jsonlFile, (d) => deltas.push(d));
+    expect(deltas.length).toBe(0);
+
+    // Append content
     const line = JSON.stringify({
       type: "assistant",
       message: { usage: { input_tokens: 2000 } },
       timestamp: "2026-04-24T10:00:00.000Z",
     });
-    await fs.promises.writeFile(jsonlFile, line + "\n", "utf8");
+    await fs.promises.appendFile(jsonlFile, line + "\n", "utf8");
 
-    const deltas: TokenDelta[] = [];
-    const source = new LogTailTokenSignalSource(signalStateDir);
-
-    // First pass
+    // Second pass: reads the newly appended content
     await source.processFile(jsonlFile, (d) => deltas.push(d));
     expect(deltas.length).toBe(1);
     expect(deltas[0]!.tokens).toBe(2000);
 
-    // Second pass — cursor should be at end, no new deltas
+    // Third pass: cursor at end, no new deltas
     await source.processFile(jsonlFile, (d) => deltas.push(d));
-    expect(deltas.length).toBe(1); // still just 1 — no double-count
+    expect(deltas.length).toBe(1);
   });
 
   it("detects new lines appended after cursor", async () => {
     const jsonlFile = path.join(tmpDir, "session3.jsonl");
+    // Start empty so cursor is established at 0
+    await fs.promises.writeFile(jsonlFile, "", "utf8");
+
+    const deltas: TokenDelta[] = [];
+    const source = new LogTailTokenSignalSource(signalStateDir);
+
+    // Establish cursor at 0
+    await source.processFile(jsonlFile, (d) => deltas.push(d));
+    expect(deltas.length).toBe(0);
+
+    // Append first line
     const line1 = JSON.stringify({
       type: "assistant",
       message: { usage: { input_tokens: 100 } },
       timestamp: "2026-04-24T10:00:00.000Z",
     });
-    await fs.promises.writeFile(jsonlFile, line1 + "\n", "utf8");
+    await fs.promises.appendFile(jsonlFile, line1 + "\n", "utf8");
 
-    const deltas: TokenDelta[] = [];
-    const source = new LogTailTokenSignalSource(signalStateDir);
-
-    // First pass — reads line 1
+    // Second pass — reads line 1
     await source.processFile(jsonlFile, (d) => deltas.push(d));
     expect(deltas.length).toBe(1);
 
@@ -236,7 +346,7 @@ describe("LogTailTokenSignalSource.processFile", () => {
     });
     await fs.promises.appendFile(jsonlFile, line2 + "\n", "utf8");
 
-    // Second pass — should only read the new line
+    // Third pass — should only read the new line
     await source.processFile(jsonlFile, (d) => deltas.push(d));
     expect(deltas.length).toBe(2);
     expect(deltas[1]!.tokens).toBe(300);
@@ -245,22 +355,28 @@ describe("LogTailTokenSignalSource.processFile", () => {
   it("resets cursor when file is truncated (restart-safe)", async () => {
     const jsonlFile = path.join(tmpDir, "session4.jsonl");
 
-    // First content — make it long enough that the second write is definitely shorter
-    const bigPayload = "x".repeat(500); // pad to ensure first write is large
-    const line1 =
-      JSON.stringify({
-        type: "assistant",
-        message: {
-          usage: { input_tokens: 500 },
-          // add padding to make this file larger than the replacement
-          _padding: bigPayload,
-        },
-        timestamp: "2026-04-24T10:00:00.000Z",
-      });
-    await fs.promises.writeFile(jsonlFile, line1 + "\n", "utf8");
+    // Start empty so cursor is established at 0
+    await fs.promises.writeFile(jsonlFile, "", "utf8");
 
     const deltas: TokenDelta[] = [];
     const source = new LogTailTokenSignalSource(signalStateDir);
+
+    // Establish cursor at 0
+    await source.processFile(jsonlFile, (d) => deltas.push(d));
+    expect(deltas.length).toBe(0);
+
+    // Write a large first content (cursor advances past it)
+    const bigPayload = "x".repeat(500); // pad to ensure first write is large
+    const line1 = JSON.stringify({
+      type: "assistant",
+      message: {
+        usage: { input_tokens: 500 },
+        _padding: bigPayload,
+      },
+      timestamp: "2026-04-24T10:00:00.000Z",
+    });
+    await fs.promises.appendFile(jsonlFile, line1 + "\n", "utf8");
+
     await source.processFile(jsonlFile, (d) => deltas.push(d));
     expect(deltas.length).toBe(1);
     expect(deltas[0]!.tokens).toBe(500);
@@ -300,6 +416,7 @@ describe("LogTailTokenSignalSource.processFile", () => {
     const source = new LogTailTokenSignalSource(signalStateDir);
     await source.processFile(jsonlFile, (d) => deltas.push(d));
 
+    // First call on a new file: start-at-tail → 0 deltas regardless of content
     expect(deltas.length).toBe(0);
   });
 });

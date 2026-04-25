@@ -19,7 +19,21 @@
  *     > file size causes us to skip processing; we detect this and reset the
  *     cursor to 0 (treating it as a fresh file).
  *
- * # Token field extraction
+ * # Start-at-tail semantic (Bug A fix)
+ *
+ * On first encounter of a transcript file (no cursor entry in the map), we
+ * stat the file and set the cursor to the current file size, then emit ZERO
+ * deltas. This is the standard log-tail "start at tail" semantic: historical
+ * content in files that existed before glyphling was installed is not counted.
+ * Only bytes appended AFTER the first observation are eligible for XP.
+ *
+ * Edge case: a file currently being written when first observed may have
+ * bytes appended between stat and the next chokidar `change` event. Those
+ * bytes are not counted — this is acceptable. The alternative (reading from
+ * 0 on first-open) would count up to 10 GB of historical transcript data
+ * and award billions of phantom XP (confirmed live incident, 2026-04-24).
+ *
+ * # Token field extraction (Bug B fix)
  *
  * Claude Code transcript lines are JSONL objects. An assistant message line
  * has this shape (confirmed from live transcripts):
@@ -30,14 +44,19 @@
  *       "usage": {
  *         "input_tokens": number,
  *         "output_tokens": number,
- *         "cache_creation_input_tokens": number,
- *         "cache_read_input_tokens": number
+ *         "cache_creation_input_tokens": number,   // NOT counted
+ *         "cache_read_input_tokens": number         // NOT counted
  *       }
  *     }
  *   }
  *
- * We sum all four fields. Missing fields default to 0. Non-assistant-type
- * lines are skipped.
+ * We count ONLY `input_tokens + output_tokens` for XP purposes.
+ * `cache_creation_input_tokens` and `cache_read_input_tokens` are excluded
+ * because they reflect re-reading prior context, not new work the user did.
+ * In a long Claude Code conversation each prompt re-reads the cached context
+ * (200K tokens × 50 turns = 10M cache_read tokens for one session), which
+ * would dwarf real work tokens and award orders-of-magnitude too much XP.
+ * Missing fields default to 0. Non-assistant-type lines are skipped.
  */
 
 import fs from "fs";
@@ -187,7 +206,6 @@ export class LogTailTokenSignalSource implements TokenSignalSource {
   ): Promise<void> {
     // Use the in-memory cache; load from disk on first access.
     const cursors = await this.getCursors();
-    const savedOffset = cursors[filePath] ?? 0;
 
     // Get current file size
     let stat: fs.Stats;
@@ -196,6 +214,17 @@ export class LogTailTokenSignalSource implements TokenSignalSource {
     } catch {
       return; // File gone between watcher event and now
     }
+
+    // Start-at-tail: on first encounter (no cursor entry), set cursor to the
+    // current file size and emit nothing. This prevents re-counting historical
+    // transcripts that existed before glyphling was installed.
+    if (!(filePath in cursors)) {
+      cursors[filePath] = stat.size;
+      await this.queueFlush();
+      return;
+    }
+
+    const savedOffset = cursors[filePath]!;
 
     // If file shrunk (truncated/rotated), reset cursor to 0
     const startOffset = savedOffset > stat.size ? 0 : savedOffset;
@@ -347,13 +376,18 @@ export class LogTailTokenSignalSource implements TokenSignalSource {
  *     "usage": {
  *       "input_tokens": number,
  *       "output_tokens": number,
- *       "cache_creation_input_tokens": number,
- *       "cache_read_input_tokens": number
+ *       "cache_creation_input_tokens": number,   // intentionally excluded (see Bug B)
+ *       "cache_read_input_tokens": number         // intentionally excluded (see Bug B)
  *     }
  *   },
  *   "timestamp": "2026-...",
  *   "sessionId": "..."
  * }
+ *
+ * XP counts ONLY `input_tokens + output_tokens`. Cache fields are excluded
+ * because `cache_read_input_tokens` reflects re-reading prior context, not
+ * new work — a long session can accumulate 10M+ cached tokens vs. ~50K real
+ * tokens, awarding orders of magnitude too much XP if included.
  */
 export function parseTranscriptLine(
   line: string
@@ -381,18 +415,11 @@ export function parseTranscriptLine(
 
   const u = usage as Record<string, unknown>;
 
+  // Count only input + output tokens. Cache tokens excluded — see function comment.
   const inputTokens = typeof u["input_tokens"] === "number" ? u["input_tokens"] : 0;
   const outputTokens = typeof u["output_tokens"] === "number" ? u["output_tokens"] : 0;
-  const cacheCreate =
-    typeof u["cache_creation_input_tokens"] === "number"
-      ? u["cache_creation_input_tokens"]
-      : 0;
-  const cacheRead =
-    typeof u["cache_read_input_tokens"] === "number"
-      ? u["cache_read_input_tokens"]
-      : 0;
 
-  const tokens = inputTokens + outputTokens + cacheCreate + cacheRead;
+  const tokens = inputTokens + outputTokens;
   if (tokens <= 0) return null;
 
   // Timestamp: prefer the top-level timestamp field
