@@ -138,18 +138,18 @@ export function pickIdleVariant(p: PersonalityVector): SceneId {
 //   happy-sparkle   : 14f / 15fps =  933ms → 1500ms
 // ---------------------------------------------------------------------------
 
-export const SCENE_WINDOWS_MS: Partial<Record<SceneId, number>> = {
-  "levelup-flash":  3000,
-  "eat-small":      1500,
-  "eat-feast":      2500,
-  "play-bounce":    1500,
-  "play-chase":     2000,
-  "hatch-crack":    2000,
-  "hatch-emerge":   2000,
-  "evolve-shimmer": 3000,
-  "happy-wag":      1500,
-  "happy-sparkle":  1500,
-};
+// Derived from scene metadata at module load: window = scene's natural
+// duration (frames.length / fps * 1000ms). Padding the window beyond scene
+// duration causes the time-driven frame index to clamp to the last frame and
+// freeze the pet on a frozen pose for the rest of the window. Keeping
+// window === duration means the scene falls through to ambient (or a chained
+// scene via priority order) the moment it finishes playing.
+export const SCENE_WINDOWS_MS: Partial<Record<SceneId, number>> =
+  Object.fromEntries(
+    Object.values(SCENES)
+      .filter((s) => !s.loop)
+      .map((s) => [s.id, Math.round((s.frames.length / s.fps) * 1000)])
+  ) as Partial<Record<SceneId, number>>;
 
 // ---------------------------------------------------------------------------
 // Scene selection from Pet state
@@ -196,6 +196,8 @@ export function selectScene(pet: Pet, nowMs: number = Date.now()): SceneId {
   }
 
   // Helper: check if a one-shot timestamp is within its window.
+  // Window = scene duration (see SCENE_WINDOWS_MS derivation comment) so the
+  // scene falls through to ambient the moment it finishes — never freezes.
   const inWindow = (ts: string | null | undefined, sceneId: SceneId): boolean => {
     if (ts == null) return false;
     const window = SCENE_WINDOWS_MS[sceneId];

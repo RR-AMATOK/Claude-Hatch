@@ -121,8 +121,8 @@ describe("selectScene — priority ordering", () => {
   it("healthy pet + just-leveled-up + just-fed → levelup-flash (beats eat)", () => {
     const now = Date.now();
     const pet = makePet({
-      lastLevelUpAt: tsAgo(500, now),  // level-up 500ms ago (within 3000ms window)
-      lastFedAt: tsAgo(200, now),      // fed 200ms ago (within eat-small window)
+      lastLevelUpAt: tsAgo(100, now),  // level-up 100ms ago (within levelup-flash window)
+      lastFedAt: tsAgo(100, now),      // fed 100ms ago (within eat-feast window)
     });
     expect(selectScene(pet, now)).toBe("levelup-flash");
   });
@@ -178,8 +178,8 @@ describe("selectScene — priority ordering", () => {
   it("levelup + hatch both active → levelup-flash wins (higher priority)", () => {
     const now = Date.now();
     const pet = makePet({
-      lastLevelUpAt: tsAgo(500, now),
-      lastHatchedAt: tsAgo(500, now),
+      lastLevelUpAt: tsAgo(100, now),  // within levelup-flash window
+      lastHatchedAt: tsAgo(100, now),  // within hatch-emerge window
     });
     expect(selectScene(pet, now)).toBe("levelup-flash");
   });
@@ -434,8 +434,10 @@ describe("SCENE_WINDOWS_MS — invariants", () => {
     }
   });
 
-  it("levelup-flash window matches statusline constant (3000ms)", () => {
-    expect(SCENE_WINDOWS_MS["levelup-flash"]).toBe(3000);
+  it("levelup-flash window equals scene duration (10 frames @ 30fps = ~333ms)", () => {
+    // Window is now derived from scene metadata so it always matches the
+    // scene's natural duration. No more frozen-on-last-frame artifacts.
+    expect(SCENE_WINDOWS_MS["levelup-flash"]).toBe(333);
   });
 });
 
