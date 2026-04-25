@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-`glyphling` is a Tamagotchi-like terminal pet companion that lives alongside Claude Code sessions. It persists a small JSON world model to `~/.claude/glyphling/` and awards XP to your pet based on real coding signals (tokens, commits, tests, file edits, daily check-ins). The level cap is **1024** — a rare binary-themed achievement. Glyphling ships two render modes: a one-shot compact statusline subprocess that puts the pet directly in the Claude Code window (DEC-016), and a long-running Ink TUI with full animations, REPL, and GIF export.
+`glyphling` is a Tamagotchi-like terminal pet companion that lives alongside Claude Code sessions. It persists a small JSON world model to `~/.claude/glyphling/` and awards XP to your pet based on real coding signals (tokens, commits, tests, file edits, daily check-ins). The level cap is **1618** — the Golden Level (⌊φ × 1000⌋). Glyphling ships two render modes: a one-shot compact statusline subprocess that puts the pet directly in the Claude Code window (DEC-016), and a long-running Ink TUI with full animations, REPL, and GIF export.
 
 See [`docs/architecture.md`](docs/architecture.md) for the full design and [`docs/design/compact-frames.md`](docs/design/compact-frames.md) for the statusline frame vocabulary spec.
 
@@ -168,7 +168,7 @@ No `.env` file is needed. The CLI reads these directly from the environment.
 
 ## Invariants (never break without a new DEC)
 
-- **1024 is sacred.** The level cap is 1024. Do not round, re-cap, relabel, or soften this number.
+- **1618 is sacred — the Golden Level.** The level cap is 1618 = ⌊φ × 1000⌋. The XP curve `xpToNext(L) = floor(2·L^φ)` is structurally golden — the exponent is φ itself. Do not round, re-cap, relabel, or soften this number. (See DEC-020.)
 - **Death rule is hybrid (DEC-009):** pet dies on 3 accumulated-neglect-days OR 14 wall-clock days since last interaction, whichever comes first. Pause freezes both axes.
 - **Dev state stays isolated.** `npm run dev/demo/test` never writes to `~/.claude/`. The CLI enforces this at startup.
 - **Egg species are lowercase (DEC-017):** `circuit`, `rune`, `shard`, `bloom`. These are the `Pet.species` enum values, `CompactVocab` silhouette keys, and `animations/<species>/` directory names. Do not use the old straw-man names (`Silicon`, `Cosmic`, `Bytebeast`, `Root`).
