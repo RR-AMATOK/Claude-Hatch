@@ -275,10 +275,16 @@ describe("validateState — sad paths", () => {
     ).toBe(true);
   });
 
-  it("throws when level exceeds 1024", () => {
-    const pet = makeValidPet({ level: 1025 });
+  it("throws when level exceeds 1618 (DEC-020)", () => {
+    const pet = makeValidPet({ level: 1619 });
     const bad = makeValidState({ pets: [pet] });
     expect(() => validateState(bad)).toThrow();
+  });
+
+  it("allows level=1618 (Golden Level — DEC-020)", () => {
+    const pet = makeValidPet({ level: 1618 });
+    const good = makeValidState({ pets: [pet] });
+    expect(() => validateState(good)).not.toThrow();
   });
 
   it("throws when xp is negative", () => {

@@ -42,7 +42,9 @@ export type EventType =
   | "export.completed"
   | "export.failed"
   // Integrity events (emitted by persistence / XP engine — DEC-018)
-  | "signal.rejected";
+  | "signal.rejected"
+  // Migration events (emitted by DEC-020 migration on first load)
+  | "pet.regrade";
 
 export interface GlyphlingEvent {
   id: string;
