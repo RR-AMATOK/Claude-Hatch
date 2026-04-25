@@ -27,13 +27,26 @@ const MAX_STATE_BYTES = 5 * 1024 * 1024;
  * which must not block on lock contention (DEC-016 §13 risk #6).
  */
 export async function readState(config: Config): Promise<StateFileV1 | null> {
+  return (await readStateOrError(config)).state;
+}
+
+/**
+ * TODO-038: Like readState, but also reports whether a parse/schema error was
+ * the terminal failure (as opposed to a missing or empty file).
+ *
+ * Used by renderOnce to distinguish "no pet" from "state stale" in the
+ * statusline fallback output.
+ */
+export async function readStateOrError(
+  config: Config
+): Promise<{ state: StateFileV1 | null; parseError: boolean }> {
   return readStateFromPath(config.paths.stateFile);
 }
 
 async function readStateFromPath(
   stateFile: string,
   attempt = 0
-): Promise<StateFileV1 | null> {
+): Promise<{ state: StateFileV1 | null; parseError: boolean }> {
   // SEC-003: stat first; refuse if too large
   try {
     const stat = await fs.promises.stat(stateFile);
@@ -41,10 +54,10 @@ async function readStateFromPath(
       process.stderr.write(
         `[glyphling] state.json exceeds size limit (${stat.size} bytes > ${MAX_STATE_BYTES}); refusing to load\n`
       );
-      return null;
+      return { state: null, parseError: false };
     }
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return { state: null, parseError: false };
     throw err;
   }
 
@@ -52,16 +65,17 @@ async function readStateFromPath(
   try {
     raw = await fs.promises.readFile(stateFile, "utf8");
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return { state: null, parseError: false };
     throw err;
   }
 
   // Empty file = same semantics as missing (first-run race or interrupted truncate).
-  if (raw.length === 0) return null;
+  if (raw.length === 0) return { state: null, parseError: false };
 
   try {
     const parsed: unknown = JSON.parse(raw);
-    return validateState(parsed);
+    const state = validateState(parsed);
+    return { state, parseError: false };
   } catch (err) {
     if (attempt === 0) {
       await sleep(READ_RETRY_JITTER_MS);
@@ -70,7 +84,7 @@ async function readStateFromPath(
     process.stderr.write(
       `[glyphling] state.json failed to parse (attempt ${attempt + 1}): ${String(err)}\n`
     );
-    return null;
+    return { state: null, parseError: true };
   }
 }
 
