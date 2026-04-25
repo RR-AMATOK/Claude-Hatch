@@ -28,6 +28,7 @@ import {
   FALLBACK_OUTPUT,
   pickScene,
   getLifeStage,
+  applyEyeBlink,
 } from "./compact.js";
 
 // ---------------------------------------------------------------------------
@@ -507,6 +508,47 @@ describe("assembleCompactOutput", () => {
     const output = assembleCompactOutput(pet, "idle-baseline", 0, "none", false, 1, 0);
     expect(output).toContain("(");
     expect(output).toContain("v");
+  });
+
+  it("eye-blink fires on tick % 4 === 2 and is silent otherwise", () => {
+    // Hatchling stage — silhouette is `/oo\` so blink → `/__\`.
+    const pet = makePet({ level: 1, xp: 0, eggType: "shard" });
+    const open = assembleCompactOutput(pet, "idle-baseline", 0, "none", false, 1, 0);
+    const blink = assembleCompactOutput(pet, "idle-baseline", 2, "none", false, 1, 0);
+    expect(open).toContain("/oo\\");
+    expect(open).not.toContain("/__\\");
+    expect(blink).toContain("/__\\");
+    expect(blink).not.toContain("/oo\\");
+    // Width parity (≤60-col contract) — blink token must match eye-token width.
+    for (const row of blink.split("\n")) {
+      expect(visibleWidth(row)).toBeLessThanOrEqual(60);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// applyEyeBlink — pure helper
+// ---------------------------------------------------------------------------
+
+describe("applyEyeBlink", () => {
+  it("returns the row unchanged on non-blink ticks (3 of every 4)", () => {
+    const row = " /oo\\";
+    expect(applyEyeBlink(row, "shard", "hatchling", 0)).toBe(row);
+    expect(applyEyeBlink(row, "shard", "hatchling", 1)).toBe(row);
+    expect(applyEyeBlink(row, "shard", "hatchling", 3)).toBe(row);
+  });
+
+  it("substitutes the eye token on tick % 4 === 2", () => {
+    expect(applyEyeBlink(" /oo\\", "shard", "hatchling", 2)).toBe(" /__\\");
+    expect(applyEyeBlink(" /[o-o]\\", "circuit", "adult", 2)).toBe(" /[_-_]\\");
+    expect(applyEyeBlink(" <..>", "rune", "hatchling", 2)).toBe(" <__>");
+    expect(applyEyeBlink(" (oo)", "bloom", "hatchling", 2)).toBe(" (__)");
+  });
+
+  it("preserves visible width on the blink frame", () => {
+    const row = " /**oo**\\";
+    const blinked = applyEyeBlink(row, "shard", "adult", 2);
+    expect(visibleWidth(blinked)).toBe(visibleWidth(row));
   });
 });
 

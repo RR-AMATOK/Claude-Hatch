@@ -707,6 +707,59 @@ export function pickCompactFrame(
 }
 
 // ---------------------------------------------------------------------------
+// Eye-blink animation — minimum-viable life signal for static silhouettes.
+// 4-tick cycle: 3 ticks open + 1 tick closed (tick % 4 === 2 = blink frame).
+// Blink token MUST match the eye token's visible width so silhouette
+// dimensions and the ≤60-col contract are preserved.
+// ---------------------------------------------------------------------------
+
+interface EyeAnim {
+  /** Literal substring matched in the eye-bearing silhouette row. */
+  readonly eyes: string;
+  /** Replacement during the blink frame; same length as `eyes`. */
+  readonly blink: string;
+}
+
+const EYE_ANIM: Record<EggType, Record<LifeStage, EyeAnim>> = {
+  circuit: {
+    hatchling: { eyes: "oo", blink: "__" },
+    juvenile: { eyes: "oo", blink: "__" },
+    adult: { eyes: "o-o", blink: "_-_" },
+  },
+  rune: {
+    hatchling: { eyes: "..", blink: "__" },
+    juvenile: { eyes: "..", blink: "__" },
+    adult: { eyes: "..", blink: "__" },
+  },
+  shard: {
+    hatchling: { eyes: "oo", blink: "__" },
+    juvenile: { eyes: "oo", blink: "__" },
+    adult: { eyes: "oo", blink: "__" },
+  },
+  bloom: {
+    hatchling: { eyes: "oo", blink: "__" },
+    juvenile: { eyes: "oo", blink: "__" },
+    adult: { eyes: "oo", blink: "__" },
+  },
+};
+
+/**
+ * Apply the per-tick blink to a silhouette row. Returns `row` unchanged on
+ * non-blink ticks (3 of every 4). Pure and deterministic — same (row,
+ * species, stage, tick) always returns the same string.
+ */
+export function applyEyeBlink(
+  row: string,
+  species: EggType,
+  stage: LifeStage,
+  tick: number
+): string {
+  if (tick % 4 !== 2) return row;
+  const { eyes, blink } = EYE_ANIM[species][stage];
+  return row.replace(eyes, blink);
+}
+
+// ---------------------------------------------------------------------------
 // HUD row rendering
 // ---------------------------------------------------------------------------
 
@@ -853,10 +906,12 @@ export function assembleCompactOutput(
   if (sceneKey === "death" || sceneKey === "level-up") {
     artRows = frame.content;
   } else {
-    // Use the silhouette for the species/stage, ignore the circuit-template in frame.content
+    // Use the silhouette for the species/stage, ignore the circuit-template in frame.content.
+    // Tick-driven eye-blink overlays the silhouette to keep the pet visibly alive.
     const stage = getLifeStage(deriveLevel(pet.xp));
     const sil = SILHOUETTES[pet.eggType][stage];
-    artRows = sil.narrow[0] + "\n" + sil.narrow[1];
+    const row0 = applyEyeBlink(sil.narrow[0], pet.eggType, stage, tick);
+    artRows = row0 + "\n" + sil.narrow[1];
   }
 
   const hudRow = renderHudRow(pet, mood, totalPets, petIndex, mode, richGlyphs);
@@ -1080,7 +1135,7 @@ export function assembleWideOutput(
     } else {
       const stage = getLifeStage(deriveLevel(pet.xp));
       const sil = SILHOUETTES[pet.eggType][stage];
-      row2 = sil.narrow[0];
+      row2 = applyEyeBlink(sil.narrow[0], pet.eggType, stage, tick);
       row3 = sil.narrow[1];
     }
 
@@ -1104,7 +1159,13 @@ export function assembleWideOutput(
   } else {
     const stage = getLifeStage(deriveLevel(pet.xp));
     const sil = SILHOUETTES[pet.eggType][stage];
-    wideRows = sil.wide;
+    // Eye-blink lives on row 1 of the wide silhouette (eye-bearing row).
+    wideRows = [
+      sil.wide[0],
+      applyEyeBlink(sil.wide[1], pet.eggType, stage, tick),
+      sil.wide[2],
+      sil.wide[3],
+    ];
   }
 
   // Handle sleep particles for sleeping scene on wide tier.
