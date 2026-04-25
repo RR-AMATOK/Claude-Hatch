@@ -17,6 +17,7 @@ import { captureMain } from "./render/capture.js";
 import { exportCommand, hatchCommand } from "./commands/handlers.js";
 import { runWatchDaemon } from "./daemon/index.js";
 import { runDoctor } from "./commands/doctor.js";
+import { setupCommand, parseSetupArgs } from "./commands/setup.js";
 
 export async function main(argv: string[]): Promise<number> {
   // Resolve state home — will throw if DEC-008 guard trips.
@@ -53,6 +54,26 @@ export async function main(argv: string[]): Promise<number> {
     const result = await exportCommand(argv.slice(1), { config });
     if (result.ok) {
       process.stdout.write((result.message ?? "Export complete.") + "\n");
+      return 0;
+    } else {
+      process.stderr.write(`[glyphling] ${result.error}\n`);
+      return 1;
+    }
+  }
+
+  // Interactive setup wizard — `glyphling setup [flags]`
+  // Placed after assertStateNotSymlinked because it writes both state and settings.json.
+  if (argv[0] === "setup") {
+    const setupArgs = parseSetupArgs(argv.slice(1));
+    const result = await setupCommand(setupArgs, { config });
+    if (result.ok) {
+      if (result.message) {
+        // In non-interactive mode, print the summary; interactive mode already
+        // streamed output directly to stdout during the prompts.
+        if (!process.stdin.isTTY || setupArgs.nonInteractive) {
+          process.stdout.write(result.message + "\n");
+        }
+      }
       return 0;
     } else {
       process.stderr.write(`[glyphling] ${result.error}\n`);

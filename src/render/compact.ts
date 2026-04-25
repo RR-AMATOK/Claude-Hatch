@@ -317,7 +317,7 @@ interface SilhouetteEntry {
   wide: readonly [string, string, string, string];
 }
 
-const SILHOUETTES: Record<EggType, Record<LifeStage, SilhouetteEntry>> = {
+export const SILHOUETTES: Record<EggType, Record<LifeStage, SilhouetteEntry>> = {
   circuit: {
     // design "juvenile" = code hatchling (L0-2)
     hatchling: {
