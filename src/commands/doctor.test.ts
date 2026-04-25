@@ -69,11 +69,10 @@ describe("runDoctor", () => {
     expect(output).toMatch(/not running/i);
   });
 
-  it("reports pet info and token cap when state file exists", async () => {
+  it("reports pet info when state file exists (DEC-020: no token cap display)", async () => {
     const { ulid } = await import("ulid");
     const config = buildConfig(tmpDir);
     const now = new Date().toISOString();
-    const today = now.slice(0, 10);
     const petId = ulid();
 
     const state = {
@@ -113,9 +112,7 @@ describe("runDoctor", () => {
           diedAt: null,
           tombstone: null,
           languageExposure: {},
-          dailyCaps: {
-            [today]: { tokens: 150, tests: 0, commits: 0, edits: 0 },
-          },
+          dailyCaps: {},
         },
       ],
       globals: {
@@ -145,8 +142,9 @@ describe("runDoctor", () => {
 
     expect(code).toBe(0);
     expect(output).toContain("Bramble");
-    expect(output).toContain("Token cap:");
-    expect(output).toContain("150");
+    // DEC-020: daily cap display was removed; no "Token cap:" line
+    expect(output).not.toContain("Token cap:");
+    expect(output).toContain("250 XP");
   });
 
   it("reports last tokens.delta event when events log exists", async () => {

@@ -32,8 +32,14 @@ const MAX_COLS = 60;
 /** Hard ceiling: rows per compact frame. */
 const MAX_ROWS = 3;
 
-/** Level cap — duplicated from xp/engine.ts to keep statusline self-contained. */
-const LEVEL_CAP = 1024;
+/**
+ * Level cap — duplicated from xp/engine.ts to keep statusline self-contained (DEC-016).
+ * DEC-020: 1024 → 1618 (the Golden Level).
+ */
+const LEVEL_CAP = 1618;
+
+/** φ = (1+√5)/2 — golden ratio exponent for the DEC-020 XP curve. */
+const PHI_COMPACT = (1 + Math.sqrt(5)) / 2;
 
 // ---------------------------------------------------------------------------
 // Responsive tier classification (statusline-wide.md §2)
@@ -83,7 +89,8 @@ function cumulativeTable(): number[] {
   let running = 0;
   for (let k = 1; k <= LEVEL_CAP; k++) {
     t[k] = running;
-    running += Math.floor(25 * Math.pow(k, 1.2));
+    // DEC-020 golden curve: floor(2 * k^φ)
+    running += Math.floor(2 * Math.pow(k, PHI_COMPACT));
   }
   _cumTable = t;
   return t;
@@ -618,7 +625,7 @@ const NEGLECT_1D = 86400; // seconds
  * Derive the current mood from a Pet's state.
  * Priority: dead > dying > celebrating-window > sick > hungry > sleeping > happy > content.
  *
- * Ascendants (L1024, DEC-019 D6) are immune to sick/dying moods. Any legacy
+ * Ascendants (L1618, DEC-019 D6 / DEC-020) are immune to sick/dying moods. Any legacy
  * `sick` state in the stored Pet is ignored — the renderer treats them as clean.
  */
 export function deriveMood(pet: Pet, nowMs: number): MoodKey {
@@ -657,7 +664,7 @@ export function deriveMood(pet: Pet, nowMs: number): MoodKey {
  * Pick the appropriate scene key given a pet's current state.
  * Falls back to idle-baseline for unrecognized scenes.
  *
- * Ascendants (L1024, DEC-019 D6) never enter the sick scene.
+ * Ascendants (L1618, DEC-019 D6 / DEC-020) never enter the sick scene.
  */
 export function pickScene(pet: Pet, _nowMs: number): SceneKey {
   if (pet.diedAt !== null) return "death";
@@ -776,7 +783,7 @@ export function renderHudRow(
   richGlyphs: boolean
 ): string {
   const derivedLevel = deriveLevel(pet.xp);
-  const isAscendant = derivedLevel >= 1024;
+  const isAscendant = derivedLevel >= LEVEL_CAP;
   const isDead = pet.diedAt !== null;
 
   // Name: up to 12 chars
@@ -981,7 +988,7 @@ function renderHudLeftGroup(
   mode: ColorMode
 ): string {
   const derivedLevel = deriveLevel(pet.xp);
-  const isAsc = derivedLevel >= 1024;
+  const isAsc = derivedLevel >= LEVEL_CAP;
   const isDead = pet.diedAt !== null;
 
   // Name: compact variant — no right-padding (spec §5.4b)

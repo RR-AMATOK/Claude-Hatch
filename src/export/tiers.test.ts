@@ -99,9 +99,9 @@ describe("TIER_SPECS", () => {
     expect(spec.goldenBorder).toBe(false);
   });
 
-  it("Tier 3 has correct DEC-005 values", () => {
+  it("Tier 3 has correct DEC-020 values", () => {
     const spec = TIER_SPECS[3];
-    expect(spec.requiredLevel).toBe(1024);
+    expect(spec.requiredLevel).toBe(1618);
     expect(spec.width).toBe(1280);
     expect(spec.height).toBe(720);
     expect(spec.fps).toBe(30);
@@ -125,8 +125,8 @@ describe("requiredLevelForTier", () => {
     expect(requiredLevelForTier(2)).toBe(250);
   });
 
-  it("returns 1024 for tier 3", () => {
-    expect(requiredLevelForTier(3)).toBe(1024);
+  it("returns 1618 for tier 3 (DEC-020 Golden Level)", () => {
+    expect(requiredLevelForTier(3)).toBe(1618);
   });
 });
 
@@ -192,25 +192,24 @@ describe("gateForTier", () => {
     });
   });
 
-  describe("Tier 3 (requires L1024)", () => {
-    it("blocks a pet at L1023", () => {
-      const pet = makePet(xpForLevel(1023));
+  describe("Tier 3 (requires L1618, DEC-020)", () => {
+    it("blocks a pet at L1617", () => {
+      const pet = makePet(xpForLevel(1617));
       const result = gateForTier(3, pet);
       expect(result.ok).toBe(false);
       if (!result.ok) {
         expect(result.code).toBe("TIER_LOCKED");
-        expect(result.currentLevel).toBe(1023);
-        expect(result.requiredLevel).toBe(1024);
+        expect(result.currentLevel).toBe(1617);
+        expect(result.requiredLevel).toBe(1618);
       }
     });
 
-    it("allows a pet at exactly L1024", () => {
-      // L1024 needs cumulativeXpForLevel(1024) XP
-      const pet = makePet(xpForLevel(1024));
+    it("allows a pet at exactly L1618", () => {
+      const pet = makePet(xpForLevel(1618));
       const result = gateForTier(3, pet);
       expect(result.ok).toBe(true);
       if (result.ok) {
-        expect(result.currentLevel).toBe(1024);
+        expect(result.currentLevel).toBe(1618);
         expect(result.spec.goldenBorder).toBe(true);
       }
     });
@@ -241,10 +240,10 @@ describe("currentLevelForPet", () => {
     expect(currentLevelForPet(pet)).toBe(50);
   });
 
-  it("caps at 1024 even with excess XP", () => {
-    // Add more XP than needed for L1024
-    const pet = makePet(xpForLevel(1024) + 9_999_999);
-    expect(currentLevelForPet(pet)).toBe(1024);
+  it("caps at 1618 even with excess XP (DEC-020)", () => {
+    // Add more XP than needed for L1618
+    const pet = makePet(xpForLevel(1618) + 9_999_999);
+    expect(currentLevelForPet(pet)).toBe(1618);
   });
 });
 

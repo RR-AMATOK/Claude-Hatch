@@ -1,21 +1,23 @@
 /**
  * Tests for TokenCollector:
- *   - Token delta → XP event with correct xpDelta (floor(tokens/500))
- *   - Daily cap stops further XP after threshold
+ *   - Token delta → XP event with correct xpDelta (floor(tokens/1000) per DEC-020)
  *   - Accumulation: emits when ≥ 5000 tokens
  *   - Re-accumulates tokens when appendEvent fails
+ *   - prevHash chain integrity
+ *
+ * DEC-020: Daily cap tests removed (caps abolished). XP accumulates without limit.
  */
 
 import fs from "fs";
 import os from "os";
 import path from "path";
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { TokenCollector, EMIT_TOKEN_THRESHOLD } from "./collector.js";
 import type { TokenDelta, TokenSignalSource, AdapterHealth } from "./adapter.js";
 import { buildConfig } from "../../config/env.js";
 import { readState } from "../../state/persistence.js";
 import { parseEvent } from "../../state/schema.js";
-import { DAILY_CAP_TOKENS } from "../../xp/engine.js";
+import { XP_PER_TOKEN_DENOMINATOR } from "../../xp/engine.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -152,7 +154,7 @@ describe("TokenCollector", () => {
     await fs.promises.rm(tmpDir, { recursive: true, force: true });
   });
 
-  it("emits tokens.delta event with correct xpDelta (floor(tokens/500))", async () => {
+  it("emits tokens.delta event with correct xpDelta (floor(tokens/1000) per DEC-020)", async () => {
     const { petId, config } = await setupPet(tmpDir);
     const source = makeFakeSource();
     const collector = new TokenCollector(source, config);
@@ -170,12 +172,11 @@ describe("TokenCollector", () => {
     expect(tokenEvents.length).toBeGreaterThanOrEqual(1);
 
     const evt = tokenEvents[0]!;
-    expect(evt!.xpDelta).toBe(Math.floor(EMIT_TOKEN_THRESHOLD / 500));
+    expect(evt!.xpDelta).toBe(Math.floor(EMIT_TOKEN_THRESHOLD / XP_PER_TOKEN_DENOMINATOR));
     expect((evt!.payload as Record<string, unknown>)["tokens"]).toBe(EMIT_TOKEN_THRESHOLD);
   });
 
   it("prevHash chain: second event's prevHash matches first event's hash", async () => {
-    const { ulid } = await import("ulid");
     const { sha256, canonicalJson } = await import("../../util/hash.js");
     const { petId, config } = await setupPet(tmpDir);
     const source = makeFakeSource();
@@ -203,14 +204,14 @@ describe("TokenCollector", () => {
     expect(second!.prevHash).toBe(expectedPrevHash);
   });
 
-  it("does not emit if accumulated tokens < threshold (below floor XP)", async () => {
+  it("does not emit if accumulated tokens produce 0 xpDelta (below XP floor)", async () => {
     const { petId, config } = await setupPet(tmpDir);
     const source = makeFakeSource();
     const collector = new TokenCollector(source, config);
     const stop = collector.start(petId);
 
-    // Only 499 tokens — below the 500-token XP floor (0 xpDelta)
-    source.emit({ ts: new Date().toISOString(), tokens: 499 });
+    // 999 tokens → floor(999/1000) = 0 XP delta; no event should be emitted
+    source.emit({ ts: new Date().toISOString(), tokens: 999 });
 
     await new Promise((r) => setTimeout(r, 100));
     await stop();
@@ -246,32 +247,34 @@ describe("TokenCollector", () => {
     expect(tokens).toBeGreaterThanOrEqual(EMIT_TOKEN_THRESHOLD);
   });
 
-  it("daily cap: XP accumulated in dailyCaps does not exceed DAILY_CAP_TOKENS", async () => {
+  it("DEC-020: large token send grants XP without daily cap rejection", async () => {
     const { petId, config } = await setupPet(tmpDir);
     const source = makeFakeSource();
     const collector = new TokenCollector(source, config);
     const stop = collector.start(petId);
 
-    // Send enough tokens to generate far more XP than the daily cap.
-    // DAILY_CAP_TOKENS = 6000; each 500 tokens = 1 XP, so 6000*500 = 3M tokens = exactly at cap.
-    // Send 4x that to clearly exceed the cap.
-    const tokensOverCap = DAILY_CAP_TOKENS * 500 * 4;
-
-    source.emit({ ts: new Date().toISOString(), tokens: tokensOverCap });
+    // Send 3_000_000 tokens (well above the old 6000 XP daily cap equivalent)
+    source.emit({ ts: new Date().toISOString(), tokens: 3_000_000 });
     await new Promise((r) => setTimeout(r, 300));
     await stop();
 
-    // Read updated state — pet's daily XP for tokens must be ≤ cap
+    // Read updated state — XP should exceed what the old daily cap would allow
     const state = await readState(config);
     expect(state).not.toBeNull();
     const pet = state!.pets.find((p) => p.id === petId);
     expect(pet).toBeDefined();
 
-    const today = new Date().toISOString().slice(0, 10);
-    const usedToday = pet!.dailyCaps[today]?.["tokens"] ?? 0;
-    expect(usedToday).toBeLessThanOrEqual(DAILY_CAP_TOKENS);
-    // Also confirm XP was actually awarded (not zero)
-    expect(usedToday).toBeGreaterThan(0);
+    // floor(3_000_000 / 1000) = 3000 XP — should all be granted (no cap)
+    expect(pet!.xp).toBeGreaterThan(0);
+
+    // No signal.rejected events with cap.daily reason should exist
+    const events = await readEvents(config.paths.eventsLog);
+    const capRejections = events.filter(
+      (e) =>
+        e?.type === "signal.rejected" &&
+        (e.payload as { reason?: string })?.reason === "cap.daily"
+    );
+    expect(capRejections).toHaveLength(0);
   });
 
   it("stop() flushes remaining accumulated tokens", async () => {
@@ -280,15 +283,15 @@ describe("TokenCollector", () => {
     const collector = new TokenCollector(source, config);
     const stop = collector.start(petId);
 
-    // Send exactly 1000 tokens — below the 5000 threshold but above XP floor
-    source.emit({ ts: new Date().toISOString(), tokens: 1000 });
+    // Send exactly 2000 tokens — below the 5000 threshold but above XP floor (1000)
+    source.emit({ ts: new Date().toISOString(), tokens: 2000 });
 
-    // Stop immediately (should flush the 1000 tokens)
+    // Stop immediately (should flush the 2000 tokens)
     await stop();
 
     const events = await readEvents(config.paths.eventsLog);
     const tokenEvents = events.filter((e) => e?.type === "tokens.delta");
     expect(tokenEvents.length).toBe(1);
-    expect(tokenEvents[0]!.xpDelta).toBe(2); // floor(1000/500) = 2
+    expect(tokenEvents[0]!.xpDelta).toBe(2); // floor(2000/1000) = 2
   });
 });

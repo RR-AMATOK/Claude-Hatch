@@ -382,7 +382,7 @@ export async function adoptCommand(
  * Auto-select the highest GIF tier the pet currently qualifies for (DEC-019 D2).
  *
  * Tier selection:
- *   L >= 1024 → Tier 3
+ *   L >= 1618 → Tier 3 (DEC-020 Golden Level)
  *   L >= 250  → Tier 2
  *   L >= 25   → Tier 1
  *   L < 25    → null (ineligible)
@@ -391,7 +391,7 @@ export async function adoptCommand(
  */
 export function autoPickTier(pet: Pet): GifTier | null {
   const level = levelFromCumXp(pet.xp);
-  if (level >= 1024) return 3;
+  if (level >= 1618) return 3;
   if (level >= 250) return 2;
   if (level >= 25) return 1;
   return null;
@@ -407,7 +407,7 @@ export function autoPickTier(pet: Pet): GifTier | null {
  * Usage:
  *   export 1                — Tier 1 Snapshot (default scene)
  *   export 2 idle-chipper   — Tier 2 Portrait of the chipper idle scene
- *   export 3                — Tier 3 Showcase (default scene, requires L1024)
+ *   export 3                — Tier 3 Showcase (default scene, requires L1618)
  *
  * The GLYPHLING_HOME env var is forwarded to the capture subprocess via the
  * tape's env-prefix so it uses the same state directory as the parent process.
