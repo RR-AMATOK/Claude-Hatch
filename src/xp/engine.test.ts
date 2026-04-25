@@ -72,6 +72,7 @@ function makePet(overrides: Partial<Pet> = {}): Pet {
     tombstone: null,
     languageExposure: {},
     dailyCaps: {},
+    lastLevelUpAt: null,
     ...overrides,
   };
 }
@@ -493,6 +494,52 @@ describe("applyEvent — level-up side effects", () => {
     const event = makeEvent({ xpDelta: 100_000_000 });
     const result = applyEvent(event, pet);
     expect(result.pet.level).toBe(LEVEL_CAP);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// applyEvent — lastLevelUpAt (Bug C)
+// ---------------------------------------------------------------------------
+
+describe("applyEvent — lastLevelUpAt", () => {
+  it("sets lastLevelUpAt to a fresh ISO timestamp when level increases", () => {
+    const before = Date.now();
+    const pet = makePet({ xp: 0, level: 1, lastLevelUpAt: null });
+    const event = makeEvent({ xpDelta: xpToNext(1) }); // crosses level 1→2
+    const result = applyEvent(event, pet);
+    expect(result.pet.level).toBe(2);
+    expect(result.pet.lastLevelUpAt).not.toBeNull();
+    const ts = Date.parse(result.pet.lastLevelUpAt!);
+    expect(ts).toBeGreaterThanOrEqual(before);
+    expect(ts).toBeLessThanOrEqual(Date.now() + 100);
+  });
+
+  it("leaves lastLevelUpAt unchanged when XP does not cross a level boundary", () => {
+    const existingTs = "2026-04-20T00:00:00.000Z";
+    const pet = makePet({ xp: 0, level: 1, lastLevelUpAt: existingTs });
+    const event = makeEvent({ xpDelta: xpToNext(1) - 1 }); // does not level up
+    const result = applyEvent(event, pet);
+    expect(result.pet.level).toBe(1);
+    expect(result.pet.lastLevelUpAt).toBe(existingTs);
+  });
+
+  it("lastLevelUpAt starts null and is set on first level-up", () => {
+    const pet = makePet({ xp: 0, level: 1, lastLevelUpAt: null });
+    const event = makeEvent({ xpDelta: xpToNext(1) });
+    const result = applyEvent(event, pet);
+    expect(result.pet.lastLevelUpAt).not.toBeNull();
+  });
+
+  it("Bramble XP is not zeroed by applyEvent — raw XP accumulates correctly", () => {
+    // Exit criterion 5: Bramble's stored XP must never be zeroed.
+    // xp=1_900_000 → levelFromCumXp = 277 (cumXp[278]=1903573, so 1.9M is below 278).
+    // Giving 1 XP → new xp=1_900_001, still level 277 (no level-up boundary crossed).
+    const bramblePet = makePet({ xp: 1_900_000, level: 277, lastLevelUpAt: null });
+    const event = makeEvent({ xpDelta: 1 });
+    const result = applyEvent(event, bramblePet);
+    expect(result.pet.xp).toBe(1_900_001);
+    expect(result.pet.level).toBe(277);
+    expect(result.pet.lastLevelUpAt).toBeNull();
   });
 });
 

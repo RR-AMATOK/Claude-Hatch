@@ -74,6 +74,7 @@ function makePet(level: number): Pet {
     tombstone: null,
     languageExposure: {},
     dailyCaps: {},
+    lastLevelUpAt: null,
   };
 }
 

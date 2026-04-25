@@ -62,6 +62,7 @@ function makePet(overrides: Partial<Pet> = {}): Pet {
     tombstone: null,
     languageExposure: {},
     dailyCaps: {},
+    lastLevelUpAt: null,
     ...overrides,
   };
 }

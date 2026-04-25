@@ -219,6 +219,7 @@ export function adopt(
     tombstone: null,
     languageExposure: {},
     dailyCaps: {},
+    lastLevelUpAt: null,
   };
 
   const events: GlyphlingEvent[] = [];

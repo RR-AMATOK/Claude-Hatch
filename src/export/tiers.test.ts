@@ -62,6 +62,7 @@ function makePet(xp: number): Pet {
     tombstone: null,
     languageExposure: {},
     dailyCaps: {},
+    lastLevelUpAt: null,
   };
 }
 
