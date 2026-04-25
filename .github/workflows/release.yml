@@ -1,0 +1,74 @@
+name: Release
+
+# Triggered by semantic-version tags (v1.2.3). Manual tag push is the
+# deliberate release ritual; no branch-based auto-publish.
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+      - 'v[0-9]+.[0-9]+.[0-9]+-*'  # pre-release (v0.1.0-rc.1 etc.)
+
+# id-token: write is required for npm provenance (Sigstore attestation).
+# contents: read is enough for publish — we don't push anything back.
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    name: pre-publish gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.x'
+          cache: npm
+
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run demo:lint
+      - run: npm test
+      - run: npm run build
+
+      - name: Verify tag matches package.json version
+        run: |
+          set -euo pipefail
+          pkg_version=$(node -p "require('./package.json').version")
+          tag_ref="${GITHUB_REF#refs/tags/v}"
+          # Strip any pre-release suffix before the compare (v0.1.0-rc.1 → 0.1.0).
+          tag_version="${tag_ref%%-*}"
+          if [ "$pkg_version" != "$tag_version" ]; then
+            echo "::error::tag v$tag_ref does not match package.json version $pkg_version"
+            exit 1
+          fi
+          echo "tag v$tag_ref ↔ package.json $pkg_version  OK"
+
+  publish:
+    name: npm publish
+    needs: gate
+    runs-on: ubuntu-latest
+    # Users can attach a manual approval by creating a "release" environment
+    # in repo settings → Environments → Protection rules.
+    environment: release
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.x'
+          registry-url: 'https://registry.npmjs.org'
+          cache: npm
+
+      - run: npm ci
+
+      - name: Publish with provenance
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

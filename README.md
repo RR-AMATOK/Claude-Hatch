@@ -1,5 +1,9 @@
 # glyphling
 
+[![CI](https://github.com/RR-AMATOK/Claude-Hatch/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/RR-AMATOK/Claude-Hatch/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
+[![Node](https://img.shields.io/badge/node-%3E%3D20-brightgreen)](./package.json)
+
 > A tiny companion that grows with your code.
 
 <p align="center">
