@@ -102,7 +102,7 @@ Neglect it and it slows down, gets quiet, then sick. The clock is honest: pause 
 
 ## Personality from your code
 
-Two pets of the same species are never the same. Your pet's temperament is a blend of eight traits — `Curious`, `Stoic`, `Energetic`, `Friendly`, `Gruff`, `Philosophical`, `Mischievous`, `Paranoid` — and the blend is computed from the real texture of your work: the languages you touch, the hours you keep, the rhythm of your commits, the way you interact with it.
+Two pets of the same species are never the same. Your pet's temperament is a blend of eight traits — `Stoic`, `Friendly`, `Pragmatic`, `Energetic`, `Gruff`, `Philosophical`, `Paranoid`, `Curious` — and the blend is computed from the real texture of your work: the languages you touch, the hours you keep, the rhythm of your commits, the way you interact with it.
 
 A late-night Rust coder and a weekend Python poet can own the same egg and end up with visibly different pets. You'll see it in the idle animation it picks:
 
