@@ -11,6 +11,7 @@
     "dist/**/*.js",
     "dist/**/*.d.ts",
     "!dist/**/*.test.*",
+    "dist/claude-commands/*.md",
     "LICENSE",
     "README.md",
     "CHANGELOG.md"
@@ -20,7 +21,7 @@
     "demo": "GLYPHLING_HOME=./.dev-state/demo tsx src/cli.tsx",
     "test": "GLYPHLING_HOME=./.dev-state/test vitest run",
     "test:watch": "GLYPHLING_HOME=./.dev-state/test vitest",
-    "build": "tsc -p tsconfig.build.json && chmod +x dist/src/bin.js",
+    "build": "tsc -p tsconfig.build.json && chmod +x dist/src/bin.js && cp -r claude-commands dist/claude-commands",
     "typecheck": "tsc --noEmit",
     "demo:lint": "bash scripts/check-tapes.sh",
     "demo:record": "bash scripts/record-demo.sh",
