@@ -4,20 +4,45 @@
  *   - Accumulation: emits when ≥ 5000 tokens
  *   - Re-accumulates tokens when appendEvent fails
  *   - prevHash chain integrity
+ *   - Single-flight: at most one appendEvent in-flight (TODO-033)
+ *   - Concurrency stress: 100 parallel onDelta calls (TODO-033)
+ *   - Hard-error rollback: tokens re-accumulated on non-LockTimeoutError (TODO-033)
+ *   - Lock-timeout retry: retries on LockTimeoutError, succeeds eventually (TODO-033)
  *
  * DEC-020: Daily cap tests removed (caps abolished). XP accumulates without limit.
+ *
+ * Mock strategy: vi.mock() hoists the persistence module globally. The factory
+ * wraps appendEvent in a vi.fn that calls through to the real implementation by
+ * default. Tests that need to intercept it override via mockImplementationOnce.
+ * beforeEach resets the mock back to call-through so tests are isolated.
  */
 
 import fs from "fs";
 import os from "os";
 import path from "path";
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { TokenCollector, EMIT_TOKEN_THRESHOLD } from "./collector.js";
 import type { TokenDelta, TokenSignalSource, AdapterHealth } from "./adapter.js";
 import { buildConfig } from "../../config/env.js";
 import { readState } from "../../state/persistence.js";
 import { parseEvent } from "../../state/schema.js";
 import { XP_PER_TOKEN_DENOMINATOR } from "../../xp/engine.js";
+import { LockTimeoutError } from "../../state/lockfile.js";
+
+// ---------------------------------------------------------------------------
+// Module mock — must be at the top level so Vitest can hoist it.
+// The factory captures the real appendEvent and wraps it in vi.fn so tests
+// can override per-call while the default call-through keeps integration tests
+// working unchanged.
+// ---------------------------------------------------------------------------
+
+vi.mock("../../state/persistence.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../state/persistence.js")>();
+  return {
+    ...actual,
+    appendEvent: vi.fn(actual.appendEvent),
+  };
+});
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -148,6 +173,19 @@ describe("TokenCollector", () => {
 
   beforeEach(async () => {
     tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "collector-test-"));
+
+    // Reset the appendEvent mock to call-through (real implementation) before
+    // each test so per-test overrides from previous tests don't leak.
+    const persistMod = await import("../../state/persistence.js");
+    const appendEventFn = persistMod.appendEvent as ReturnType<typeof vi.fn>;
+    appendEventFn.mockReset();
+    // Re-wrap with the real implementation captured at mock-creation time.
+    // We re-import the original because the mock factory captured it once;
+    // mockReset() removed it. Use vi.importActual to get the unwrapped original.
+    const actualMod = await vi.importActual<typeof import("../../state/persistence.js")>(
+      "../../state/persistence.js"
+    );
+    appendEventFn.mockImplementation(actualMod.appendEvent);
   });
 
   afterEach(async () => {
@@ -183,7 +221,9 @@ describe("TokenCollector", () => {
     const collector = new TokenCollector(source, config);
     const stop = collector.start(petId);
 
-    // Two separate threshold crossings
+    // Two separate threshold crossings — single-flight ensures they are
+    // serialized: the second emit queues as a trailing emit after the first
+    // appendEvent completes, so both events land and the chain is intact.
     source.emit({ ts: new Date().toISOString(), tokens: EMIT_TOKEN_THRESHOLD });
     await new Promise((r) => setTimeout(r, 150));
 
@@ -293,5 +333,185 @@ describe("TokenCollector", () => {
     const tokenEvents = events.filter((e) => e?.type === "tokens.delta");
     expect(tokenEvents.length).toBe(1);
     expect(tokenEvents[0]!.xpDelta).toBe(2); // floor(2000/1000) = 2
+  });
+
+  // ---------------------------------------------------------------------------
+  // TODO-033: single-flight + concurrency tests
+  // ---------------------------------------------------------------------------
+
+  it("single-flight: 100 concurrent onDelta calls → ≤1 appendEvent in-flight, no tokens lost", async () => {
+    const { petId, config } = await setupPet(tmpDir);
+
+    // Instrument the call-through mock to track concurrency.
+    let maxConcurrent = 0;
+    let currentConcurrent = 0;
+
+    const persistMod = await import("../../state/persistence.js");
+    const appendEventMock = persistMod.appendEvent as ReturnType<typeof vi.fn>;
+    const actualMod = await vi.importActual<typeof import("../../state/persistence.js")>(
+      "../../state/persistence.js"
+    );
+
+    appendEventMock.mockImplementation(
+      async (...args: Parameters<typeof actualMod.appendEvent>) => {
+        currentConcurrent += 1;
+        maxConcurrent = Math.max(maxConcurrent, currentConcurrent);
+        try {
+          return await actualMod.appendEvent(...args);
+        } finally {
+          currentConcurrent -= 1;
+        }
+      }
+    );
+
+    const source = makeFakeSource();
+    const collector = new TokenCollector(source, config);
+    const stop = collector.start(petId);
+
+    // Fire 100 threshold-crossing deltas in rapid succession.
+    const ts = new Date().toISOString();
+    for (let i = 0; i < 100; i++) {
+      source.emit({ ts, tokens: EMIT_TOKEN_THRESHOLD });
+    }
+
+    // Allow all trailing emits to settle.
+    await new Promise((r) => setTimeout(r, 800));
+    await stop();
+
+    // Single-flight invariant: ≤1 appendEvent in-flight at any time.
+    expect(maxConcurrent).toBeLessThanOrEqual(1);
+
+    // Total XP must equal floor(totalTokens / XP_PER_TOKEN_DENOMINATOR) — no tokens lost.
+    const totalTokens = 100 * EMIT_TOKEN_THRESHOLD;
+    const expectedXp = Math.floor(totalTokens / XP_PER_TOKEN_DENOMINATOR);
+
+    const state = await readState(config);
+    expect(state).not.toBeNull();
+    const pet = state!.pets.find((p) => p.id === petId);
+    expect(pet).toBeDefined();
+    expect(pet!.xp).toBe(expectedXp);
+  });
+
+  it("hard-error rollback: tokens are re-accumulated when appendEvent throws a non-LockTimeoutError", async () => {
+    const { petId, config } = await setupPet(tmpDir);
+
+    const persistMod = await import("../../state/persistence.js");
+    const appendEventMock = persistMod.appendEvent as ReturnType<typeof vi.fn>;
+    const actualMod = await vi.importActual<typeof import("../../state/persistence.js")>(
+      "../../state/persistence.js"
+    );
+    let callCount = 0;
+
+    appendEventMock.mockImplementation(
+      async (...args: Parameters<typeof actualMod.appendEvent>) => {
+        callCount += 1;
+        if (callCount === 1) {
+          throw new Error("DISK_FULL: simulated hard error");
+        }
+        return actualMod.appendEvent(...args);
+      }
+    );
+
+    const source = makeFakeSource();
+    const collector = new TokenCollector(source, config);
+    const stop = collector.start(petId);
+
+    // First emit — appendEvent throws; tokens should be re-accumulated.
+    source.emit({ ts: new Date().toISOString(), tokens: EMIT_TOKEN_THRESHOLD });
+    await new Promise((r) => setTimeout(r, 150));
+
+    // Second emit — appendEvent succeeds; flushes re-accumulated + new tokens together.
+    source.emit({ ts: new Date().toISOString(), tokens: EMIT_TOKEN_THRESHOLD });
+    await new Promise((r) => setTimeout(r, 400));
+
+    await stop();
+
+    // Total persisted tokens = 2 × threshold (no tokens lost).
+    const events = await readEvents(config.paths.eventsLog);
+    const tokenEvents = events.filter((e) => e?.type === "tokens.delta");
+    expect(tokenEvents.length).toBeGreaterThanOrEqual(1);
+
+    const totalTokens = tokenEvents.reduce(
+      (sum, e) => sum + ((e?.payload as Record<string, unknown>)["tokens"] as number),
+      0
+    );
+    expect(totalTokens).toBe(2 * EMIT_TOKEN_THRESHOLD);
+  });
+
+  it("lock-timeout retry: retries on LockTimeoutError N times then succeeds", async () => {
+    const { petId, config } = await setupPet(tmpDir);
+
+    const persistMod = await import("../../state/persistence.js");
+    const appendEventMock = persistMod.appendEvent as ReturnType<typeof vi.fn>;
+    const actualMod = await vi.importActual<typeof import("../../state/persistence.js")>(
+      "../../state/persistence.js"
+    );
+    const FAIL_TIMES = 3;
+    let callCount = 0;
+
+    appendEventMock.mockImplementation(
+      async (...args: Parameters<typeof actualMod.appendEvent>) => {
+        callCount += 1;
+        if (callCount <= FAIL_TIMES) {
+          throw new LockTimeoutError(config.paths.stateFile, 5000);
+        }
+        return actualMod.appendEvent(...args);
+      }
+    );
+
+    const source = makeFakeSource();
+    const collector = new TokenCollector(source, config);
+    const stop = collector.start(petId);
+
+    source.emit({ ts: new Date().toISOString(), tokens: EMIT_TOKEN_THRESHOLD });
+
+    // Retry backoff: 50ms + 100ms + 200ms = 350ms minimum. Allow generous wait.
+    await new Promise((r) => setTimeout(r, 1500));
+    await stop();
+
+    // Exactly FAIL_TIMES + 1 calls (3 failures then 1 success).
+    expect(callCount).toBe(FAIL_TIMES + 1);
+
+    // Event was eventually persisted.
+    const events = await readEvents(config.paths.eventsLog);
+    const tokenEvents = events.filter((e) => e?.type === "tokens.delta");
+    expect(tokenEvents.length).toBe(1);
+    expect(
+      (tokenEvents[0]!.payload as Record<string, unknown>)["tokens"]
+    ).toBe(EMIT_TOKEN_THRESHOLD);
+  });
+
+  // 10 retries with capped 500ms backoff = ~3.75s total wall-clock; bump test
+  // timeout to 8s so the drain-loop in stop() can finish before vitest aborts.
+  it("lock-timeout retry: re-accumulates tokens when retries are exhausted", { timeout: 8000 }, async () => {
+    const { petId, config } = await setupPet(tmpDir);
+
+    const persistMod = await import("../../state/persistence.js");
+    const appendEventMock = persistMod.appendEvent as ReturnType<typeof vi.fn>;
+    let callCount = 0;
+
+    // Always reject with LockTimeoutError — exhausts all retries.
+    appendEventMock.mockImplementation(async () => {
+      callCount += 1;
+      throw new LockTimeoutError(config.paths.stateFile, 5000);
+    });
+
+    const source = makeFakeSource();
+    const collector = new TokenCollector(source, config);
+    const stop = collector.start(petId);
+
+    source.emit({ ts: new Date().toISOString(), tokens: EMIT_TOKEN_THRESHOLD });
+
+    // Allow first few retries to fire (50ms + 100ms + 200ms = 350ms for first 3).
+    await new Promise((r) => setTimeout(r, 500));
+    await stop();
+
+    // Retries fired: callCount > 1.
+    expect(callCount).toBeGreaterThan(1);
+
+    // No events persisted (all attempts failed) — tokens re-accumulated but not flushed.
+    const events = await readEvents(config.paths.eventsLog);
+    const tokenEvents = events.filter((e) => e?.type === "tokens.delta");
+    expect(tokenEvents.length).toBe(0);
   });
 });
