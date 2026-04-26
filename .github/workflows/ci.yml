@@ -2,9 +2,10 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, beta, dev, 'feature/*', 'fix/*', 'hotfix/*']
   pull_request:
-    branches: [main]
+    branches: [main, beta, dev]
+  workflow_dispatch:
 
 # Cancel prior in-flight runs for the same branch/PR so a fresh push
 # short-circuits the previous one instead of queueing.

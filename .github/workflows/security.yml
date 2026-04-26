@@ -1,0 +1,89 @@
+# ============================================================
+# Security scans (scheduled + on PR to beta/main)
+# ============================================================
+# Trigger:
+#   - schedule: Monday 07:00 UTC (matches Dependabot cadence)
+#   - pull_request: to beta or main
+#   - workflow_dispatch: manual trigger
+#
+# Jobs:
+#   audit  — audit-ci (high+). Permissions: contents: read
+#   codeql — CodeQL JS/TS. Permissions: contents: read,
+#             security-events: write, actions: read
+#
+# All actions pinned to commit SHA per §5.5 of docs/ci-cd.md.
+# The trailing comment on each uses: line is the human-readable
+# tag; Dependabot will keep these SHAs up to date automatically.
+# ============================================================
+
+name: Security
+
+on:
+  schedule:
+    - cron: '0 7 * * 1'   # Monday 07:00 UTC — matches Dependabot cadence
+  pull_request:
+    branches: [dev, beta, main]
+  workflow_dispatch:
+
+concurrency:
+  group: security-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Default: minimal read. Each job overrides to the exact scope it needs.
+permissions:
+  contents: read
+
+jobs:
+  # ---- Dependency audit ----
+  audit:
+    name: audit-ci (high)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Setup Node 22.x
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: '22.x'
+          cache: npm
+
+      - name: Install deps (frozen lockfile)
+        run: npm ci
+
+      - name: Run audit-ci
+        # Fails on high+ severity advisories per .audit-ci.json allowlist.
+        run: npx audit-ci --config .audit-ci.json
+
+  # ---- CodeQL SAST ----
+  codeql:
+    name: CodeQL
+    # Skip on PR-to-dev / PR-to-beta to keep promotion PRs fast.
+    # Always runs on schedule, manual dispatch, and PR-to-main.
+    if: github.event_name != 'pull_request' || github.base_ref == 'main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@ce64ddcb0d8d890d2df4a9d1c04ff297367dea2a # v3.35.2
+        with:
+          languages: javascript-typescript
+          # Default queries catch eval, tainted-input-into-spawn, regex DoS.
+          # If FP rate is too high in the first month, switch to schedule-only.
+          queries: security-and-quality
+
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@ce64ddcb0d8d890d2df4a9d1c04ff297367dea2a # v3.35.2
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@ce64ddcb0d8d890d2df4a9d1c04ff297367dea2a # v3.35.2
+        with:
+          category: /language:javascript-typescript
