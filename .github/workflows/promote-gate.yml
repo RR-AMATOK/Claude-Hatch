@@ -1,0 +1,50 @@
+# ============================================================
+# Promote-gate
+# ============================================================
+# Trigger: pull_request targeting dev, beta, or main
+# Purpose: Conditional smoke-pack jobs that scale with PR target.
+#
+# Responsibility split:
+#   ci.yml       — Node × OS matrix (test, build, pack) on every push and PR.
+#   security.yml — audit-ci (high) + CodeQL on PR to beta/main and on schedule.
+#   promote-gate — ONLY the conditional smoke-pack jobs:
+#
+#   PR → dev   (light):  no additional jobs (ci.yml and security.yml suffice)
+#   PR → beta  (full):   smoke-pack on ubuntu-latest
+#   PR → main  (full):   smoke-pack on ubuntu-latest + macos-latest
+#
+# Non-publish workflow: cancel stale in-progress runs.
+# Permissions: contents: read
+# ============================================================
+
+name: Promote gate
+
+on:
+  pull_request:
+    branches: [dev, beta, main]
+
+concurrency:
+  group: promote-gate-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # ---- beta / main only: smoke-pack on ubuntu ----
+  smoke-ubuntu:
+    name: smoke-pack (ubuntu-latest)
+    if: |
+      github.base_ref == 'beta' ||
+      github.base_ref == 'main'
+    uses: ./.github/workflows/smoke-pack.yml
+    with:
+      os: ubuntu-latest
+
+  # ---- main only: smoke-pack on macos ----
+  smoke-macos:
+    name: smoke-pack (macos-latest)
+    if: github.base_ref == 'main'
+    uses: ./.github/workflows/smoke-pack.yml
+    with:
+      os: macos-latest

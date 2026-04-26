@@ -19,7 +19,7 @@
 
 These must stay true. Check each before merging.
 
-- [ ] Level cap remains **1024** (never round, re-cap, or relabel).
+- [ ] Level cap remains **1618** (⌊φ × 1000⌋ — never round, re-cap, or relabel).
 - [ ] Egg species stay lowercase: `circuit`, `rune`, `shard`, `bloom` (DEC-017).
 - [ ] `npm run dev` / `demo` / `test` still refuse to write under `~/.claude/` (DEC-008).
 - [ ] Death rule is unchanged: 3 accumulated-neglect-days OR 14 wall-clock days (DEC-009).

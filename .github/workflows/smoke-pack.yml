@@ -1,0 +1,89 @@
+# ============================================================
+# Smoke-pack (reusable)
+# ============================================================
+# Trigger: workflow_call only
+# Input:   os — ubuntu-latest | macos-latest
+# Jobs:    smoke (single job: build → pack → global-install → verify)
+# Purpose: Verify the published tarball actually installs and runs.
+#          Catches missing bin entries, broken shebangs, ESM/CJS
+#          blow-ups, and missing dist/claude-commands/*.md files.
+#
+# GLYPHLING_HOME is set to $RUNNER_TEMP/smoke (never ~/.claude/).
+# The statusline subcommand exits 0 with FALLBACK_OUTPUT when
+# state.json is absent — that is the expected behavior here.
+#
+# Required-status-check name emitted by this file:
+#   "smoke-pack (ubuntu-latest)"
+#   "smoke-pack (macos-latest)"
+# ============================================================
+
+name: Smoke-pack (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      os:
+        description: 'Runner OS (ubuntu-latest or macos-latest)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    name: smoke-pack (${{ inputs.os }})
+    runs-on: ${{ inputs.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Node 22.x
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22.x'
+          cache: npm
+
+      - name: Install deps (frozen lockfile)
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Pack tarball
+        run: npm pack
+
+      # macOS ships without GNU coreutils timeout; install it via Homebrew.
+      # The brew prefix step is a no-op on Linux (brew exits cleanly but is a
+      # no-op install since the package isn't needed).
+      - name: Install gtimeout on macOS
+        if: runner.os == 'macOS'
+        run: brew install coreutils
+
+      - name: Install packed tarball globally
+        run: npm install -g ./glyphling-*.tgz
+
+      # NOTE: `glyphling --version` smoke step is deferred until the
+      # `chore/version-flag-and-handler-cleanup` PR merges and adds a
+      # `--version` / `-V` fast-path that exits before booting Ink.
+      # On current main, --version falls through to the TUI which crashes
+      # in non-TTY contexts (raw mode unsupported). Restore the step then.
+
+      - name: Verify statusline exits 0 with non-empty stdout
+        run: |
+          set -euo pipefail
+          # Use gtimeout on macOS (installed above), timeout on Linux.
+          if command -v gtimeout &>/dev/null; then
+            TIMEOUT_CMD=gtimeout
+          else
+            TIMEOUT_CMD=timeout
+          fi
+          out=$($TIMEOUT_CMD 5 glyphling statusline)
+          if [ -z "$out" ]; then
+            echo "::error::glyphling statusline produced empty stdout"
+            exit 1
+          fi
+          echo "statusline output: $out"
+        env:
+          # DEC-008: never write under ~/.claude/ in non-production contexts.
+          GLYPHLING_HOME: ${{ runner.temp }}/smoke
