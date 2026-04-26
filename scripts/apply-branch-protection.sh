@@ -22,11 +22,14 @@
 #     "test (node 22.x · macos-latest)"
 #     "pack dry-run (tarball hygiene)"
 #
-#   From .github/workflows/promote-gate.yml:
+#   From .github/workflows/security.yml:
 #     "audit-ci (high)"
 #     "CodeQL"
-#     "smoke-pack (ubuntu-latest)"
-#     "smoke-pack (macos-latest)"
+#
+#   From .github/workflows/promote-gate.yml (reusable workflow_call —
+#   names are PREFIXED by the calling job's display name):
+#     "smoke-pack (ubuntu-latest) / smoke-pack (ubuntu-latest)"
+#     "smoke-pack (macos-latest) / smoke-pack (macos-latest)"
 #
 # WARNING: Renaming any of those job `name:` fields will break
 # branch protection without this script being updated and re-run.
@@ -58,8 +61,8 @@ gh api --method PUT "repos/$REPO/branches/main/protection" \
       "pack dry-run (tarball hygiene)",
       "audit-ci (high)",
       "CodeQL",
-      "smoke-pack (ubuntu-latest)",
-      "smoke-pack (macos-latest)"
+      "smoke-pack (ubuntu-latest) / smoke-pack (ubuntu-latest)",
+      "smoke-pack (macos-latest) / smoke-pack (macos-latest)"
     ]
   },
   "enforce_admins": true,
@@ -100,7 +103,7 @@ gh api --method PUT "repos/$REPO/branches/beta/protection" \
       "test (node 22.x · macos-latest)",
       "pack dry-run (tarball hygiene)",
       "audit-ci (high)",
-      "smoke-pack (ubuntu-latest)"
+      "smoke-pack (ubuntu-latest) / smoke-pack (ubuntu-latest)"
     ]
   },
   "enforce_admins": true,
