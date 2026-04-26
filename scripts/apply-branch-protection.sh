@@ -69,7 +69,7 @@ gh api --method PUT "repos/$REPO/branches/main/protection" \
   "required_pull_request_reviews": {
     "required_approving_review_count": 0,
     "dismiss_stale_reviews": true,
-    "require_last_push_approval": true
+    "require_last_push_approval": false
   },
   "required_linear_history": true,
   "required_conversation_resolution": true,
@@ -110,7 +110,7 @@ gh api --method PUT "repos/$REPO/branches/beta/protection" \
   "required_pull_request_reviews": {
     "required_approving_review_count": 0,
     "dismiss_stale_reviews": true,
-    "require_last_push_approval": true
+    "require_last_push_approval": false
   },
   "required_linear_history": true,
   "required_conversation_resolution": true,
