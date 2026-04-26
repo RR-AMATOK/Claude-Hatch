@@ -12,8 +12,19 @@ import fs from "fs";
 import type { Config } from "../config/env.js";
 import { validateState, type StateFileV1 } from "./schema.js";
 
-/** Jitter window for the retry-on-parse-error in the reader protocol (§4.4). */
-const READ_RETRY_JITTER_MS = 20;
+/**
+ * Retry policy for the reader protocol (§4.4, TODO-034).
+ *
+ * When JSON.parse fails it usually means `appendEvent` was mid-way through
+ * its tmp → rename sequence and the subprocess caught a torn read.  The
+ * rename is POSIX-atomic, so a torn read is only possible on the very first
+ * readFile call (before the rename lands).  Three retries with short sleeps
+ * are enough to outlast the window; each sleep is drawn from [MIN, MAX) so
+ * that concurrent readers don't all wake at the same instant.
+ */
+const READ_MAX_RETRIES = 3;
+const READ_RETRY_MIN_MS = 5;
+const READ_RETRY_MAX_MS = 15;
 
 /** SEC-003: Refuse state.json reads larger than this (5 MB). */
 const MAX_STATE_BYTES = 5 * 1024 * 1024;
@@ -21,7 +32,8 @@ const MAX_STATE_BYTES = 5 * 1024 * 1024;
 /**
  * Read and validate state.json from disk (§4.4 reader protocol).
  * Returns null if the file does not exist (first-run).
- * On parse error, retries once after a 20ms jitter; falls back to null.
+ * On parse error, retries up to READ_MAX_RETRIES times with short random
+ * jitter to survive torn reads; falls back to null after exhausting retries.
  *
  * Never acquires the lockfile — safe to call from the statusline subprocess
  * which must not block on lock contention (DEC-016 §13 risk #6).
@@ -77,9 +89,15 @@ async function readStateFromPath(
     const state = validateState(parsed);
     return { state, parseError: false };
   } catch (err) {
-    if (attempt === 0) {
-      await sleep(READ_RETRY_JITTER_MS);
-      return readStateFromPath(stateFile, 1);
+    if (attempt < READ_MAX_RETRIES) {
+      // Torn-read window: the writer is mid-rename.  Short random sleep lets
+      // the rename complete before we retry.  Jitter avoids thundering-herd
+      // when multiple statusline subprocesses start at the same tick.
+      const jitter =
+        READ_RETRY_MIN_MS +
+        Math.floor(Math.random() * (READ_RETRY_MAX_MS - READ_RETRY_MIN_MS));
+      await sleep(jitter);
+      return readStateFromPath(stateFile, attempt + 1);
     }
     process.stderr.write(
       `[glyphling] state.json failed to parse (attempt ${attempt + 1}): ${String(err)}\n`
