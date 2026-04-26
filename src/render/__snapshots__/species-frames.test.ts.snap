@@ -1,0 +1,21 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`species-frames adult-idle snapshots > bloom/adult/idle-baseline tick 0 1`] = `
+" (~*oo*~)
+  ~\\vv/~ "
+`;
+
+exports[`species-frames adult-idle snapshots > circuit/adult/idle-baseline tick 0 1`] = `
+" /[o-o]\\
+ +=|--|=+"
+`;
+
+exports[`species-frames adult-idle snapshots > rune/adult/idle-baseline tick 0 1`] = `
+" <^-..-^>
+  \\|||/ "
+`;
+
+exports[`species-frames adult-idle snapshots > shard/adult/idle-baseline tick 0 1`] = `
+" /**oo**\\
+ \\\\\\||///"
+`;

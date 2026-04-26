@@ -23,6 +23,7 @@ import {
   levelFromCumXp,
   cumulativeXpForLevel,
 } from "../xp/engine.js";
+import { getSpeciesCompactFrames } from "./species-frames.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -916,17 +917,27 @@ export function assembleCompactOutput(
   const frame = pickCompactFrame(pet, sceneKey, tick);
 
   // For death and level-up, the frame content already has its own rows
-  // For normal scenes, the frame content is the silhouette rows
+  // For normal scenes, prefer per-species authored frames (TODO-025); else
+  // fall back to the legacy eye-blink-on-static-silhouette path.
   let artRows: string;
   if (sceneKey === "death" || sceneKey === "level-up") {
     artRows = frame.content;
   } else {
-    // Use the silhouette for the species/stage, ignore the circuit-template in frame.content.
-    // Tick-driven eye-blink overlays the silhouette to keep the pet visibly alive.
     const stage = getLifeStage(deriveLevel(pet.xp));
-    const sil = SILHOUETTES[pet.eggType][stage];
-    const row0 = applyEyeBlink(sil.narrow[0], pet.eggType, stage, tick);
-    artRows = row0 + "\n" + sil.narrow[1];
+    const speciesFrames = getSpeciesCompactFrames(pet.eggType, stage, sceneKey);
+    if (speciesFrames !== null) {
+      // Per-species authored frames: pure tick-modulo lookup. The frame's
+      // content already paints the species silhouette, so no blink overlay
+      // is needed (the frame cycle itself carries the "alive" signal).
+      const idx = tick % speciesFrames.length;
+      artRows = speciesFrames[idx]!.content;
+    } else {
+      // Legacy fallback for scenes not yet authored per species: use the
+      // static silhouette and overlay the eye-blink to keep the pet alive.
+      const sil = SILHOUETTES[pet.eggType][stage];
+      const row0 = applyEyeBlink(sil.narrow[0], pet.eggType, stage, tick);
+      artRows = row0 + "\n" + sil.narrow[1];
+    }
   }
 
   const hudRow = renderHudRow(pet, mood, totalPets, petIndex, mode, richGlyphs);
@@ -1124,7 +1135,8 @@ export function assembleWideOutput(
     // Row 1: HUD row
     const hudRow = buildHudRow(hudLeft);
 
-    // Rows 2-3: narrow silhouette (or scene art for death/level-up)
+    // Rows 2-3: per-species authored frames (TODO-025) preferred; else
+    // legacy eye-blink-on-static-silhouette; death/level-up use scene art.
     let row2: string;
     let row3: string;
     if (sceneKey === "death" || sceneKey === "level-up") {
@@ -1133,9 +1145,17 @@ export function assembleWideOutput(
       row3 = contentRows[1] ?? "";
     } else {
       const stage = getLifeStage(deriveLevel(pet.xp));
-      const sil = SILHOUETTES[pet.eggType][stage];
-      row2 = applyEyeBlink(sil.narrow[0], pet.eggType, stage, tick);
-      row3 = sil.narrow[1];
+      const speciesFrames = getSpeciesCompactFrames(pet.eggType, stage, sceneKey);
+      if (speciesFrames !== null) {
+        const idx = tick % speciesFrames.length;
+        const contentRows = speciesFrames[idx]!.content.split("\n");
+        row2 = contentRows[0] ?? "";
+        row3 = contentRows[1] ?? "";
+      } else {
+        const sil = SILHOUETTES[pet.eggType][stage];
+        row2 = applyEyeBlink(sil.narrow[0], pet.eggType, stage, tick);
+        row3 = sil.narrow[1];
+      }
     }
 
     return hudRow + "\n" + row2 + "\n" + row3;
