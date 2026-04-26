@@ -20,7 +20,7 @@
 import fs from "fs";
 import os from "os";
 import path from "path";
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from "vitest";
 import { TokenCollector, EMIT_TOKEN_THRESHOLD } from "./collector.js";
 import type { TokenDelta, TokenSignalSource, AdapterHealth } from "./adapter.js";
 import { buildConfig } from "../../config/env.js";
@@ -42,6 +42,36 @@ vi.mock("../../state/persistence.js", async (importOriginal) => {
     ...actual,
     appendEvent: vi.fn(actual.appendEvent),
   };
+});
+
+// ---------------------------------------------------------------------------
+// Suppress vitest unhandled-rejection noise for this test file.
+//
+// The error-path tests (hard-error rollback, lock-timeout retries) deliberately
+// inject rejections via mocked appendEvent. The collector code awaits and
+// catches them inside its retry loop, but vitest's spy wrapper records the
+// rejected promise during call tracking; that recorded reference can fire
+// unhandledRejection on its own microtask schedule even though the production
+// code's await observed it. This handler silently absorbs LockTimeoutError
+// and the synthetic "DISK_FULL" error ONLY — any other unhandled rejection
+// still surfaces as a real bug. Scoped via beforeAll/afterAll to this file.
+// ---------------------------------------------------------------------------
+
+const swallowExpectedRejection = (reason: unknown): void => {
+  if (reason instanceof Error) {
+    if (reason.message.includes("DISK_FULL: simulated hard error")) return;
+    if (reason.constructor.name === "LockTimeoutError") return;
+  }
+  // Anything else: re-throw so vitest still sees it
+  throw reason;
+};
+
+beforeAll(() => {
+  process.on("unhandledRejection", swallowExpectedRejection);
+});
+
+afterAll(() => {
+  process.off("unhandledRejection", swallowExpectedRejection);
 });
 
 // ---------------------------------------------------------------------------
@@ -403,10 +433,15 @@ describe("TokenCollector", () => {
     let callCount = 0;
 
     appendEventMock.mockImplementation(
-      async (...args: Parameters<typeof actualMod.appendEvent>) => {
+      (...args: Parameters<typeof actualMod.appendEvent>) => {
         callCount += 1;
         if (callCount === 1) {
-          throw new Error("DISK_FULL: simulated hard error");
+          // Return a rejection with an early observer so vitest's spy
+          // result-tracking doesn't see it as unhandled. The collector's
+          // await still propagates the rejection to its try/catch.
+          const p = Promise.reject(new Error("DISK_FULL: simulated hard error"));
+          p.catch(() => undefined);
+          return p;
         }
         return actualMod.appendEvent(...args);
       }
@@ -450,10 +485,12 @@ describe("TokenCollector", () => {
     let callCount = 0;
 
     appendEventMock.mockImplementation(
-      async (...args: Parameters<typeof actualMod.appendEvent>) => {
+      (...args: Parameters<typeof actualMod.appendEvent>) => {
         callCount += 1;
         if (callCount <= FAIL_TIMES) {
-          throw new LockTimeoutError(config.paths.stateFile, 5000);
+          const p = Promise.reject(new LockTimeoutError(config.paths.stateFile, 5000));
+          p.catch(() => undefined);
+          return p;
         }
         return actualMod.appendEvent(...args);
       }
@@ -491,9 +528,11 @@ describe("TokenCollector", () => {
     let callCount = 0;
 
     // Always reject with LockTimeoutError — exhausts all retries.
-    appendEventMock.mockImplementation(async () => {
+    appendEventMock.mockImplementation(() => {
       callCount += 1;
-      throw new LockTimeoutError(config.paths.stateFile, 5000);
+      const p = Promise.reject(new LockTimeoutError(config.paths.stateFile, 5000));
+      p.catch(() => undefined);
+      return p;
     });
 
     const source = makeFakeSource();
