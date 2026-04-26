@@ -14,10 +14,22 @@ import { App } from "./render/App.js";
 import { resolveStateHome, assertStateNotSymlinked } from "./config/env.js";
 import { renderOnce } from "./render/statusline.js";
 import { captureMain } from "./render/capture.js";
-import { exportCommand, hatchCommand } from "./commands/handlers.js";
+import {
+  exportCommand,
+  hatchCommand,
+  feedCommand,
+  playCommand,
+  petCommand,
+  pauseCommand,
+  resumeCommand,
+  nameCommand,
+  statusCommand,
+  petsCommand,
+} from "./commands/handlers.js";
 import { runWatchDaemon } from "./daemon/index.js";
 import { runDoctor } from "./commands/doctor.js";
 import { setupCommand, parseSetupArgs } from "./commands/setup.js";
+import { installCommand } from "./commands/install.js";
 
 export async function main(argv: string[]): Promise<number> {
   // Resolve state home — will throw if DEC-008 guard trips.
@@ -38,6 +50,18 @@ export async function main(argv: string[]): Promise<number> {
   // `glyphling doctor` — read-only diagnostics, no symlink check needed.
   if (argv[0] === "doctor") {
     return runDoctor(config);
+  }
+
+  // `glyphling install [--uninstall]` — no state access; operates on ~/.claude/commands/ only.
+  if (argv[0] === "install") {
+    const result = await installCommand(argv.slice(1));
+    if (result.ok) {
+      process.stdout.write((result.message ?? "Done.") + "\n");
+      return 0;
+    } else {
+      process.stderr.write(`[glyphling] ${result.error ?? "unknown error"}\n`);
+      return 1;
+    }
   }
 
   // SEC-006: All writer paths check that state files are not symlinks.
@@ -90,6 +114,37 @@ export async function main(argv: string[]): Promise<number> {
     } else {
       process.stderr.write(`[glyphling] ${result.error}\n`);
       return 1;
+    }
+  }
+
+  // One-shot interaction commands — `glyphling feed|play|pet|pause|resume|name|status|pets`
+  {
+    type SimpleAsyncCmd = (
+      args: string[],
+      ctx: { config: typeof config }
+    ) => Promise<{ ok: boolean; message?: string; error?: string }>;
+    const simpleCommands: Record<string, SimpleAsyncCmd> = {
+      feed: feedCommand,
+      play: playCommand,
+      pet: petCommand,
+      pause: pauseCommand,
+      resume: resumeCommand,
+      name: nameCommand,
+      status: statusCommand,
+      pets: petsCommand,
+    };
+
+    const sub = argv[0];
+    if (sub !== undefined && sub in simpleCommands) {
+      const handler = simpleCommands[sub]!;
+      const result = await handler(argv.slice(1), { config });
+      if (result.ok) {
+        process.stdout.write((result.message ?? "") + "\n");
+        return 0;
+      } else {
+        process.stderr.write(`[glyphling] ${result.error ?? "unknown error"}\n`);
+        return 1;
+      }
     }
   }
 

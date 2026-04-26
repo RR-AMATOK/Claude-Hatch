@@ -60,6 +60,47 @@ The compact renderer reads state in under 30 milliseconds. No subprocess you'll 
 
 ---
 
+## Slash commands in Claude Code
+
+Once your pet is in the statusline, you can feed it, check on it, and manage it directly from the Claude Code chat using slash commands — without leaving the conversation.
+
+**Install the slash commands once:**
+
+```bash
+glyphling install
+```
+
+This copies ten `glyph-*.md` files into `~/.claude/commands/`. They are immediately available as `/glyph-feed`, `/glyph-status`, etc. in any Claude Code session.
+
+**Available slash commands:**
+
+| Command | What it does |
+|---------|-------------|
+| `/glyph-hatch <egg-type> [name]` | Hatch a new egg (first run) |
+| `/glyph-feed [note]` | Feed your pet |
+| `/glyph-pet [note]` | Scritch your pet |
+| `/glyph-play [note]` | Play a round with your pet |
+| `/glyph-pause` | Pause the neglect clock (going away for a while) |
+| `/glyph-resume` | Resume after a pause |
+| `/glyph-name <new-name>` | Rename your pet |
+| `/glyph-status` | Show a compact status summary |
+| `/glyph-pets` | List all your pets |
+| `/glyph-doctor` | Run diagnostics |
+
+Mutating commands (`hatch`, `feed`, `pet`, `play`, `pause`, `resume`, `name`) use `disable-model-invocation: true` so they run directly without spawning an LLM context. Read-only commands (`status`, `pets`, `doctor`) can also be invoked by the model.
+
+**To remove the slash commands:**
+
+```bash
+glyphling install --uninstall
+```
+
+This removes only the glyphling-managed files — any other files in `~/.claude/commands/` are untouched.
+
+Note: `glyphling install` does **not** touch `~/.claude/settings.json`. The statusline snippet above must be added manually (or run `glyphling setup` once it ships).
+
+---
+
 ## The four eggs
 
 Each egg hatches into a different lineage. The species you pick shapes your pet's silhouette, its accent colour, and the small effects it throws off while idling.

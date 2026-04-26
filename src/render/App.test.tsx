@@ -275,11 +275,11 @@ describe("dispatchCommand — REPL dispatch integration", () => {
   const tmpDir = path.join(os.tmpdir(), `glyphling-app-test-${process.pid}`);
   const ctx = { config: buildConfig(tmpDir) };
 
-  it("returns error for unimplemented 'feed'", () => {
+  it("returns error redirecting 'feed' to its async handler", () => {
     const parsed = parseInput("feed");
     const result = dispatchCommand(parsed, ctx);
     expect(result.ok).toBe(false);
-    expect((result as { ok: false; error: string }).error).toMatch(/not yet implemented/i);
+    expect((result as { ok: false; error: string }).error).toMatch(/feedCommand.*directly/i);
   });
 
   it("returns error for unimplemented 'status'", () => {

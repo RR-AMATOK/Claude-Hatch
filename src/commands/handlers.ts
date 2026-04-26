@@ -4,12 +4,16 @@
  * Implementations for: feed, pet, play, pause, resume, adopt, name,
  * export, status, pets, quit, doctor.
  *
- * The `adopt` command is implemented (TODO-010). All others remain stubs.
+ * The `adopt` command is implemented (TODO-010). All mutation commands
+ * (feed, pet, play, pause, resume, name) are implemented in TODO-022.
+ * Read-only commands (status, pets) are also implemented in TODO-022.
+ * The doctor command is delegated to src/commands/doctor.ts.
  */
 
+import { ulid } from "ulid";
 import type { ParsedCommand } from "./repl.js";
 import type { Config } from "../config/env.js";
-import type { EggType, Pet } from "../state/schema.js";
+import type { EggType, Pet, StateFileV1 } from "../state/schema.js";
 import { readState, appendEvent } from "../state/persistence.js";
 import { canAdopt, adopt, VALID_EGG_TYPES } from "../adoption/manager.js";
 import { exportGif } from "../export/gif.js";
@@ -17,8 +21,9 @@ import type { GifTier } from "../export/tiers.js";
 import type { SceneId } from "../../animations/types.js";
 import { ALL_SCENE_IDS } from "../../animations/types.js";
 import { TIER_SPECS } from "../export/tiers.js";
-import { levelFromCumXp } from "../xp/engine.js";
+import { levelFromCumXp, XP_PER_INTERACTION } from "../xp/engine.js";
 import { safeForLog } from "../util/lang.js";
+import { deriveMood, MOOD_GLYPHS } from "../render/compact.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -57,6 +62,11 @@ export type CommandName =
 
 /**
  * Routes a parsed command to its handler. Returns a result object.
+ *
+ * Note: async command handlers (feed, pet, play, pause, resume, name, status,
+ * pets) are not callable through this sync dispatch — use them directly.
+ * This function handles only synchronous commands and provides typed error
+ * messages for callers that try to dispatch async commands.
  */
 export function dispatchCommand(
   cmd: ParsedCommand,
@@ -73,8 +83,16 @@ export function dispatchCommand(
     case "name":
     case "status":
     case "pets":
+      return {
+        ok: false,
+        error: `Use ${name}Command(args, ctx) directly — it is async.`,
+      };
+
     case "doctor":
-      return { ok: false, error: `Command "${name}" not yet implemented.` };
+      return {
+        ok: false,
+        error: "Use runDoctor(config) from src/commands/doctor.ts directly.",
+      };
 
     case "export":
       // Handled via exportCommand (async) — sync wrapper not suitable here.
@@ -638,5 +656,637 @@ export async function replayCommand(
     message: `replaying "${sceneId}" scene for ${pet.name ?? pet.id}`,
     sceneId,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Shared helpers for interaction commands
+// ---------------------------------------------------------------------------
+
+/**
+ * Derive a compact HUD suffix: "Lv <N> · <mood> · <age>d"
+ * Used by feed, play, pet commands for chat-friendly output.
+ */
+function hudSuffix(pet: Pet, nowMs: number): string {
+  const level = pet.level;
+  const mood = deriveMood(pet, nowMs);
+  const moodGlyph = MOOD_GLYPHS[mood].ascii;
+  const ageMs = nowMs - new Date(pet.lastInteractionAt).getTime();
+  const ageDays = Math.floor(ageMs / (86400 * 1000));
+  return `Lv ${level} · ${moodGlyph} · ${ageDays}d`;
+}
+
+/**
+ * Resolve the active pet from state, or return an error result.
+ */
+function resolveActivePet(
+  state: StateFileV1 | null
+):
+  | { ok: true; pet: Pet; state: StateFileV1 }
+  | { ok: false; error: string } {
+  if (state === null) {
+    return {
+      ok: false,
+      error: "no state found — run glyphling hatch first to create a pet",
+    };
+  }
+  const activePetId = state.globals.activePetId;
+  if (activePetId === null) {
+    return { ok: false, error: "no active pet — hatch a pet first" };
+  }
+  const pet = state.pets.find((p) => p.id === activePetId);
+  if (pet === undefined) {
+    return {
+      ok: false,
+      error: `active pet "${activePetId}" not found in state`,
+    };
+  }
+  return { ok: true, pet, state };
+}
+
+// ---------------------------------------------------------------------------
+// feed command — async handler
+// ---------------------------------------------------------------------------
+
+/**
+ * Implements `glyphling feed [note]`.
+ *
+ * Emits a `pet.fed` event via appendEvent, which the XP engine folds into
+ * lastFedAt + XP gain. Resets accumulatedNeglectSeconds to 0.
+ */
+export async function feedCommand(
+  _args: string[],
+  ctx: CommandContext
+): Promise<CommandResult> {
+  const { config } = ctx;
+  const state = await readState(config);
+  const resolved = resolveActivePet(state);
+  if (!resolved.ok) return resolved;
+  const { pet } = resolved;
+
+  if (pet.diedAt !== null) {
+    return { ok: false, error: "your pet has died and cannot be fed." };
+  }
+
+  const now = new Date().toISOString();
+  const nowMs = Date.now();
+
+  const event = {
+    id: ulid(),
+    type: "pet.fed" as const,
+    ts: now,
+    petId: pet.id,
+    source: "cli.feed",
+    payload: {},
+    xpDelta: XP_PER_INTERACTION,
+    prevHash: "",
+  };
+
+  const fold = (currentState: StateFileV1): StateFileV1 => {
+    const idx = currentState.pets.findIndex((p) => p.id === pet.id);
+    if (idx === -1) return currentState;
+    const existing = currentState.pets[idx]!;
+    const updatedPet: Pet = {
+      ...existing,
+      xp: existing.xp + XP_PER_INTERACTION,
+      level: levelFromCumXp(existing.xp + XP_PER_INTERACTION),
+      lastFedAt: now,
+      lastInteractionAt: now,
+      accumulatedNeglectSeconds: 0,
+    };
+    const updatedPets = [...currentState.pets];
+    updatedPets[idx] = updatedPet;
+    return {
+      ...currentState,
+      pets: updatedPets,
+      updatedAt: now,
+    };
+  };
+
+  try {
+    await appendEvent(config, event, fold);
+  } catch (err) {
+    return {
+      ok: false,
+      error: `feed failed: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+
+  const displayName = pet.name ?? pet.id;
+  const suffix = hudSuffix({ ...pet, lastFedAt: now, lastInteractionAt: now, accumulatedNeglectSeconds: 0 }, nowMs);
+  return {
+    ok: true,
+    message: `Glyphling fed ${displayName}. ${suffix}`,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// play command — async handler
+// ---------------------------------------------------------------------------
+
+/**
+ * Implements `glyphling play [note]`.
+ *
+ * Emits a `pet.played` event via appendEvent, which the XP engine folds into
+ * lastPlayedAt + XP gain.
+ */
+export async function playCommand(
+  _args: string[],
+  ctx: CommandContext
+): Promise<CommandResult> {
+  const { config } = ctx;
+  const state = await readState(config);
+  const resolved = resolveActivePet(state);
+  if (!resolved.ok) return resolved;
+  const { pet } = resolved;
+
+  if (pet.diedAt !== null) {
+    return { ok: false, error: "your pet has died and cannot play." };
+  }
+
+  const now = new Date().toISOString();
+  const nowMs = Date.now();
+
+  const event = {
+    id: ulid(),
+    type: "pet.played" as const,
+    ts: now,
+    petId: pet.id,
+    source: "cli.play",
+    payload: {},
+    xpDelta: XP_PER_INTERACTION,
+    prevHash: "",
+  };
+
+  const fold = (currentState: StateFileV1): StateFileV1 => {
+    const idx = currentState.pets.findIndex((p) => p.id === pet.id);
+    if (idx === -1) return currentState;
+    const existing = currentState.pets[idx]!;
+    const updatedPet: Pet = {
+      ...existing,
+      xp: existing.xp + XP_PER_INTERACTION,
+      level: levelFromCumXp(existing.xp + XP_PER_INTERACTION),
+      lastPlayedAt: now,
+      lastInteractionAt: now,
+      accumulatedNeglectSeconds: 0,
+    };
+    const updatedPets = [...currentState.pets];
+    updatedPets[idx] = updatedPet;
+    return {
+      ...currentState,
+      pets: updatedPets,
+      updatedAt: now,
+    };
+  };
+
+  try {
+    await appendEvent(config, event, fold);
+  } catch (err) {
+    return {
+      ok: false,
+      error: `play failed: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+
+  const displayName = pet.name ?? pet.id;
+  const suffix = hudSuffix({ ...pet, lastPlayedAt: now, lastInteractionAt: now, accumulatedNeglectSeconds: 0 }, nowMs);
+  return {
+    ok: true,
+    message: `${displayName} played a round. ${suffix}`,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// pet command — async handler (scritching/petting)
+// ---------------------------------------------------------------------------
+
+/**
+ * Implements `glyphling pet [note]`.
+ *
+ * Emits a `pet.fed` event (used as a generic interaction signal) with no XP
+ * to record interaction without feeding. Resets neglect counter.
+ */
+export async function petCommand(
+  _args: string[],
+  ctx: CommandContext
+): Promise<CommandResult> {
+  const { config } = ctx;
+  const state = await readState(config);
+  const resolved = resolveActivePet(state);
+  if (!resolved.ok) return resolved;
+  const { pet } = resolved;
+
+  if (pet.diedAt !== null) {
+    return { ok: false, error: "your pet has died." };
+  }
+
+  const now = new Date().toISOString();
+
+  // pet (scritch) is a no-XP interaction — just resets neglect and updates lastInteractionAt.
+  // We use pet.fed with xpDelta=0 to record the interaction without XP.
+  const event = {
+    id: ulid(),
+    type: "pet.fed" as const,
+    ts: now,
+    petId: pet.id,
+    source: "cli.pet",
+    payload: { scritch: true },
+    prevHash: "",
+  };
+
+  const fold = (currentState: StateFileV1): StateFileV1 => {
+    const idx = currentState.pets.findIndex((p) => p.id === pet.id);
+    if (idx === -1) return currentState;
+    const existing = currentState.pets[idx]!;
+    const updatedPet: Pet = {
+      ...existing,
+      lastInteractionAt: now,
+      accumulatedNeglectSeconds: 0,
+    };
+    const updatedPets = [...currentState.pets];
+    updatedPets[idx] = updatedPet;
+    return {
+      ...currentState,
+      pets: updatedPets,
+      updatedAt: now,
+    };
+  };
+
+  try {
+    await appendEvent(config, event, fold);
+  } catch (err) {
+    return {
+      ok: false,
+      error: `pet failed: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+
+  const displayName = pet.name ?? pet.id;
+  return {
+    ok: true,
+    message: `You scritched ${displayName}. ♥`,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// pause command — async handler
+// ---------------------------------------------------------------------------
+
+/**
+ * Implements `glyphling pause`.
+ *
+ * Opens a pause interval on the active pet (sets resumedAt = null).
+ * Emits a `pet.paused` event via appendEvent.
+ */
+export async function pauseCommand(
+  _args: string[],
+  ctx: CommandContext
+): Promise<CommandResult> {
+  const { config } = ctx;
+  const state = await readState(config);
+  const resolved = resolveActivePet(state);
+  if (!resolved.ok) return resolved;
+  const { pet } = resolved;
+
+  if (pet.diedAt !== null) {
+    return { ok: false, error: "your pet has died and cannot be paused." };
+  }
+
+  // Check if already paused
+  const lastPause = pet.pauseIntervals[pet.pauseIntervals.length - 1];
+  if (lastPause !== undefined && lastPause.resumedAt === null) {
+    return { ok: false, error: "pet is already paused." };
+  }
+
+  const now = new Date().toISOString();
+
+  const event = {
+    id: ulid(),
+    type: "pet.paused" as const,
+    ts: now,
+    petId: pet.id,
+    source: "cli.pause",
+    payload: {},
+    prevHash: "",
+  };
+
+  const fold = (currentState: StateFileV1): StateFileV1 => {
+    const idx = currentState.pets.findIndex((p) => p.id === pet.id);
+    if (idx === -1) return currentState;
+    const existing = currentState.pets[idx]!;
+    const updatedPet: Pet = {
+      ...existing,
+      pauseIntervals: [
+        ...existing.pauseIntervals,
+        { pausedAt: now, resumedAt: null },
+      ],
+      lastInteractionAt: now,
+    };
+    const updatedPets = [...currentState.pets];
+    updatedPets[idx] = updatedPet;
+    return {
+      ...currentState,
+      pets: updatedPets,
+      updatedAt: now,
+    };
+  };
+
+  try {
+    await appendEvent(config, event, fold);
+  } catch (err) {
+    return {
+      ok: false,
+      error: `pause failed: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+
+  const displayName = pet.name ?? pet.id;
+  return {
+    ok: true,
+    message: `${displayName} is now paused. Neglect clock frozen.`,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// resume command — async handler
+// ---------------------------------------------------------------------------
+
+/**
+ * Implements `glyphling resume`.
+ *
+ * Closes the open pause interval on the active pet (sets resumedAt = now).
+ * Emits a `pet.resumed` event via appendEvent.
+ */
+export async function resumeCommand(
+  _args: string[],
+  ctx: CommandContext
+): Promise<CommandResult> {
+  const { config } = ctx;
+  const state = await readState(config);
+  const resolved = resolveActivePet(state);
+  if (!resolved.ok) return resolved;
+  const { pet } = resolved;
+
+  if (pet.diedAt !== null) {
+    return { ok: false, error: "your pet has died and cannot be resumed." };
+  }
+
+  // Check if currently paused
+  const lastPauseIdx = pet.pauseIntervals.length - 1;
+  const lastPause = pet.pauseIntervals[lastPauseIdx];
+  if (lastPause === undefined || lastPause.resumedAt !== null) {
+    return { ok: false, error: "pet is not currently paused." };
+  }
+
+  const now = new Date().toISOString();
+
+  const event = {
+    id: ulid(),
+    type: "pet.resumed" as const,
+    ts: now,
+    petId: pet.id,
+    source: "cli.resume",
+    payload: {},
+    prevHash: "",
+  };
+
+  const fold = (currentState: StateFileV1): StateFileV1 => {
+    const idx = currentState.pets.findIndex((p) => p.id === pet.id);
+    if (idx === -1) return currentState;
+    const existing = currentState.pets[idx]!;
+    const pIdx = existing.pauseIntervals.length - 1;
+    if (pIdx < 0) return currentState;
+    const updatedIntervals = existing.pauseIntervals.map((p, i) =>
+      i === pIdx ? { ...p, resumedAt: now } : p
+    );
+    const updatedPet: Pet = {
+      ...existing,
+      pauseIntervals: updatedIntervals,
+      lastInteractionAt: now,
+    };
+    const updatedPets = [...currentState.pets];
+    updatedPets[idx] = updatedPet;
+    return {
+      ...currentState,
+      pets: updatedPets,
+      updatedAt: now,
+    };
+  };
+
+  try {
+    await appendEvent(config, event, fold);
+  } catch (err) {
+    return {
+      ok: false,
+      error: `resume failed: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+
+  const displayName = pet.name ?? pet.id;
+  return {
+    ok: true,
+    message: `${displayName} is awake again. Neglect clock resumed.`,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// name command — async handler
+// ---------------------------------------------------------------------------
+
+/**
+ * Implements `glyphling name <new-name>`.
+ *
+ * Renames the active pet. Emits a `personality.refresh` event (used as a
+ * generic metadata mutation signal) to record the rename in the event log.
+ */
+export async function nameCommand(
+  args: string[],
+  ctx: CommandContext
+): Promise<CommandResult> {
+  const rawName = args.join(" ").trim();
+
+  if (rawName.length === 0) {
+    return { ok: false, error: "name requires a new name: glyphling name <new-name>" };
+  }
+  if (rawName.length > NAME_MAX_LEN) {
+    return {
+      ok: false,
+      error: `name too long (${rawName.length} chars); max ${NAME_MAX_LEN}`,
+    };
+  }
+
+  const { config } = ctx;
+  const state = await readState(config);
+  const resolved = resolveActivePet(state);
+  if (!resolved.ok) return resolved;
+  const { pet } = resolved;
+
+  const oldName = pet.name ?? pet.id;
+  const now = new Date().toISOString();
+
+  const event = {
+    id: ulid(),
+    type: "personality.refresh" as const,
+    ts: now,
+    petId: pet.id,
+    source: "cli.name",
+    payload: { rename: { from: oldName, to: rawName } },
+    prevHash: "",
+  };
+
+  const fold = (currentState: StateFileV1): StateFileV1 => {
+    const idx = currentState.pets.findIndex((p) => p.id === pet.id);
+    if (idx === -1) return currentState;
+    const existing = currentState.pets[idx]!;
+    const updatedPet: Pet = {
+      ...existing,
+      name: rawName,
+      lastInteractionAt: now,
+    };
+    const updatedPets = [...currentState.pets];
+    updatedPets[idx] = updatedPet;
+    return {
+      ...currentState,
+      pets: updatedPets,
+      updatedAt: now,
+    };
+  };
+
+  try {
+    await appendEvent(config, event, fold);
+  } catch (err) {
+    return {
+      ok: false,
+      error: `name failed: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+
+  // SEC-008: safeForLog on user-supplied rawName before logging
+  process.stderr.write(
+    `[glyphling] renamed ${safeForLog(oldName)} -> ${safeForLog(rawName)}\n`
+  );
+
+  return {
+    ok: true,
+    message: `${oldName} is now ${rawName}.`,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// status command — read-only
+// ---------------------------------------------------------------------------
+
+/**
+ * Implements `glyphling status`.
+ *
+ * Read-only 3-line summary: name / level / XP / mood / age.
+ * MUST NOT acquire the lockfile (DEC-010 read-only path).
+ */
+export async function statusCommand(
+  _args: string[],
+  ctx: CommandContext
+): Promise<CommandResult> {
+  const { config } = ctx;
+  const state = await readState(config);
+  const resolved = resolveActivePet(state);
+  if (!resolved.ok) return resolved;
+  const { pet } = resolved;
+
+  const nowMs = Date.now();
+  const mood = deriveMood(pet, nowMs);
+  const moodGlyph = MOOD_GLYPHS[mood].ascii;
+
+  // Compute unpaused age (DEC-011)
+  const hatchedMs = pet.hatchedAt !== null
+    ? new Date(pet.hatchedAt).getTime()
+    : new Date(pet.createdAt).getTime();
+  const pausedMs = pet.pauseIntervals.reduce((acc, interval) => {
+    const start = new Date(interval.pausedAt).getTime();
+    const end = interval.resumedAt !== null
+      ? new Date(interval.resumedAt).getTime()
+      : nowMs;
+    return acc + (end - start);
+  }, 0);
+  const unpausedMs = nowMs - hatchedMs - pausedMs;
+  const ageDays = Math.max(0, Math.floor(unpausedMs / (86400 * 1000)));
+
+  const displayName = pet.name ?? pet.id;
+  const paused = pet.pauseIntervals.length > 0 &&
+    pet.pauseIntervals[pet.pauseIntervals.length - 1]?.resumedAt === null;
+  const statusFlag = pet.diedAt !== null ? " [dead]" : paused ? " [paused]" : "";
+
+  const lines = [
+    `${displayName}${statusFlag}  [${pet.eggType}]`,
+    `Level ${pet.level}  |  ${pet.xp.toLocaleString()} XP  |  mood: ${moodGlyph}`,
+    `Age: ${ageDays}d  |  last interaction: ${formatRelative(pet.lastInteractionAt, nowMs)}`,
+  ];
+
+  return {
+    ok: true,
+    message: lines.join("\n"),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// pets command — read-only
+// ---------------------------------------------------------------------------
+
+/**
+ * Implements `glyphling pets`.
+ *
+ * Lists all pets with an active marker (*) and brief stats.
+ * MUST NOT acquire the lockfile (DEC-010 read-only path).
+ */
+export async function petsCommand(
+  _args: string[],
+  ctx: CommandContext
+): Promise<CommandResult> {
+  const { config } = ctx;
+  const state = await readState(config);
+
+  if (state === null) {
+    return {
+      ok: false,
+      error: "no state found — run glyphling hatch first to create a pet",
+    };
+  }
+
+  if (state.pets.length === 0) {
+    return { ok: true, message: "(no pets yet — run glyphling hatch to start)" };
+  }
+
+  const nowMs = Date.now();
+  const activePetId = state.globals.activePetId;
+
+  const lines = state.pets.map((pet) => {
+    const marker = pet.id === activePetId ? "*" : " ";
+    const displayName = pet.name ?? pet.id;
+    const mood = deriveMood(pet, nowMs);
+    const moodGlyph = MOOD_GLYPHS[mood].ascii;
+    const status = pet.diedAt !== null ? "[dead]" : `L${pet.level} ${moodGlyph}`;
+    return `${marker} ${displayName}  (${pet.eggType})  ${status}`;
+  });
+
+  return {
+    ok: true,
+    message: lines.join("\n"),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Formatting helpers
+// ---------------------------------------------------------------------------
+
+/** Format a timestamp as a relative human-readable string. */
+function formatRelative(isoTs: string, nowMs: number): string {
+  const ms = nowMs - new Date(isoTs).getTime();
+  if (ms < 0) return "just now";
+  const secs = Math.floor(ms / 1000);
+  if (secs < 60) return `${secs}s ago`;
+  const mins = Math.floor(secs / 60);
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ago`;
 }
 
