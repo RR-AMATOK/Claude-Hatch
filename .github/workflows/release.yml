@@ -77,7 +77,15 @@ jobs:
       - run: npm ci
       - run: npm run build
 
-      - name: Publish with provenance
-        # OIDC auth via npm trusted publisher — no NODE_AUTH_TOKEN.
-        # See docs/ci-cd.md §6 for the verification ritual.
+      # vX.Y.Z          → publishes to @latest (default)
+      # vX.Y.Z-rc.N     → publishes to @next   (per docs/ci-cd.md §7)
+      # OIDC auth via npm trusted publisher — no NODE_AUTH_TOKEN.
+      # See docs/ci-cd.md §6 for the verification ritual.
+
+      - name: Publish stable to @latest
+        if: ${{ !contains(github.ref, '-rc.') }}
         run: npm publish --provenance --access public
+
+      - name: Publish RC to @next
+        if: ${{ contains(github.ref, '-rc.') }}
+        run: npm publish --provenance --access public --tag next
