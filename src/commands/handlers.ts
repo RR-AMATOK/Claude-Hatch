@@ -13,7 +13,7 @@
 import { ulid } from "ulid";
 import type { ParsedCommand } from "./repl.js";
 import type { Config } from "../config/env.js";
-import type { EggType, Pet, StateFileV1 } from "../state/schema.js";
+import type { EggType, GlyphlingEvent, Pet, StateFileV1 } from "../state/schema.js";
 import { readState, appendEvent } from "../state/persistence.js";
 import { canAdopt, adopt, VALID_EGG_TYPES } from "../adoption/manager.js";
 import { exportGif } from "../export/gif.js";
@@ -21,7 +21,7 @@ import type { GifTier } from "../export/tiers.js";
 import type { SceneId } from "../../animations/types.js";
 import { ALL_SCENE_IDS } from "../../animations/types.js";
 import { TIER_SPECS } from "../export/tiers.js";
-import { levelFromCumXp, XP_PER_INTERACTION } from "../xp/engine.js";
+import { levelFromCumXp, makeXpFold, XP_PER_INTERACTION } from "../xp/engine.js";
 import { safeForLog } from "../util/lang.js";
 import { deriveMood, MOOD_GLYPHS } from "../render/compact.js";
 
@@ -704,14 +704,56 @@ function resolveActivePet(
 }
 
 // ---------------------------------------------------------------------------
+// Shared interaction fold
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns a fold function for user-initiated interactions (feed, play).
+ *
+ * Composes `makeXpFold()` (which handles XP gain, level recompute, lastFedAt
+ * / lastPlayedAt timestamps, level.up + unlock side-effects) with the
+ * interaction-only state updates: bump lastInteractionAt and reset the
+ * accumulated-neglect counter (DEC-009).
+ *
+ * Using `makeXpFold()` here was a real bug fix: the original per-handler
+ * inline folds skipped the level.up emission and unlock-flag propagation,
+ * so feeding past a level boundary never triggered the level-up scene or
+ * unlocked GIF tiers.
+ */
+function makeInteractionFold(): (state: StateFileV1, event: GlyphlingEvent) => StateFileV1 {
+  const xpFold = makeXpFold();
+  return (state: StateFileV1, event: GlyphlingEvent): StateFileV1 => {
+    // The engine's GlyphlingEvent (events/bus.ts hand-written interface) and
+    // persistence's GlyphlingEvent (state/schema.ts Zod-inferred) describe the
+    // same runtime shape but differ in strict-optional typing on xpDelta /
+    // prevHash. Bridge at the boundary; structurally identical.
+    const next = xpFold(state, event as Parameters<typeof xpFold>[1]);
+    if (event.petId === null) return next;
+    const idx = next.pets.findIndex((p) => p.id === event.petId);
+    if (idx === -1) return next;
+    const pet = next.pets[idx]!;
+    const updatedPet: Pet = {
+      ...pet,
+      lastInteractionAt: event.ts,
+      accumulatedNeglectSeconds: 0,
+    };
+    const pets = [...next.pets];
+    pets[idx] = updatedPet;
+    return { ...next, pets, updatedAt: event.ts };
+  };
+}
+
+// ---------------------------------------------------------------------------
 // feed command — async handler
 // ---------------------------------------------------------------------------
 
 /**
  * Implements `glyphling feed [note]`.
  *
- * Emits a `pet.fed` event via appendEvent, which the XP engine folds into
- * lastFedAt + XP gain. Resets accumulatedNeglectSeconds to 0.
+ * Emits a `pet.fed` event via appendEvent. The XP engine folds it into
+ * lastFedAt + XP gain (and emits level.up + unlock side-effects when
+ * crossing thresholds); the interaction-fold layer adds lastInteractionAt
+ * and resets accumulatedNeglectSeconds.
  */
 export async function feedCommand(
   _args: string[],
@@ -730,40 +772,20 @@ export async function feedCommand(
   const now = new Date().toISOString();
   const nowMs = Date.now();
 
-  const event = {
+  const event: GlyphlingEvent = {
     id: ulid(),
-    type: "pet.fed" as const,
+    type: "pet.fed",
     ts: now,
     petId: pet.id,
     source: "cli.feed",
     payload: {},
     xpDelta: XP_PER_INTERACTION,
+    // prevHash is set by appendEvent (DEC-018 Mechanism 1); empty here.
     prevHash: "",
   };
 
-  const fold = (currentState: StateFileV1): StateFileV1 => {
-    const idx = currentState.pets.findIndex((p) => p.id === pet.id);
-    if (idx === -1) return currentState;
-    const existing = currentState.pets[idx]!;
-    const updatedPet: Pet = {
-      ...existing,
-      xp: existing.xp + XP_PER_INTERACTION,
-      level: levelFromCumXp(existing.xp + XP_PER_INTERACTION),
-      lastFedAt: now,
-      lastInteractionAt: now,
-      accumulatedNeglectSeconds: 0,
-    };
-    const updatedPets = [...currentState.pets];
-    updatedPets[idx] = updatedPet;
-    return {
-      ...currentState,
-      pets: updatedPets,
-      updatedAt: now,
-    };
-  };
-
   try {
-    await appendEvent(config, event, fold);
+    await appendEvent(config, event, makeInteractionFold());
   } catch (err) {
     return {
       ok: false,
@@ -786,8 +808,9 @@ export async function feedCommand(
 /**
  * Implements `glyphling play [note]`.
  *
- * Emits a `pet.played` event via appendEvent, which the XP engine folds into
- * lastPlayedAt + XP gain.
+ * Emits a `pet.played` event via appendEvent. Same delegation pattern as
+ * feedCommand — the XP engine handles the canonical fold; the interaction
+ * layer adds lastInteractionAt + neglect reset.
  */
 export async function playCommand(
   _args: string[],
@@ -806,9 +829,9 @@ export async function playCommand(
   const now = new Date().toISOString();
   const nowMs = Date.now();
 
-  const event = {
+  const event: GlyphlingEvent = {
     id: ulid(),
-    type: "pet.played" as const,
+    type: "pet.played",
     ts: now,
     petId: pet.id,
     source: "cli.play",
@@ -817,29 +840,8 @@ export async function playCommand(
     prevHash: "",
   };
 
-  const fold = (currentState: StateFileV1): StateFileV1 => {
-    const idx = currentState.pets.findIndex((p) => p.id === pet.id);
-    if (idx === -1) return currentState;
-    const existing = currentState.pets[idx]!;
-    const updatedPet: Pet = {
-      ...existing,
-      xp: existing.xp + XP_PER_INTERACTION,
-      level: levelFromCumXp(existing.xp + XP_PER_INTERACTION),
-      lastPlayedAt: now,
-      lastInteractionAt: now,
-      accumulatedNeglectSeconds: 0,
-    };
-    const updatedPets = [...currentState.pets];
-    updatedPets[idx] = updatedPet;
-    return {
-      ...currentState,
-      pets: updatedPets,
-      updatedAt: now,
-    };
-  };
-
   try {
-    await appendEvent(config, event, fold);
+    await appendEvent(config, event, makeInteractionFold());
   } catch (err) {
     return {
       ok: false,
