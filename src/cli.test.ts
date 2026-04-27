@@ -3,7 +3,7 @@
  * side effects (no state resolution, no Ink boot).
  */
 
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { main, readPackageVersion } from "./cli.js";
 
 describe("readPackageVersion", () => {
