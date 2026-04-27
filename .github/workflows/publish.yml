@@ -124,4 +124,9 @@ jobs:
       - name: Publish with provenance
         # OIDC auth via npm trusted publisher (workflow=publish.yml, env=publish).
         # No NODE_AUTH_TOKEN — see DEC-022 and docs/ci-cd.md §6.
-        run: npm publish --provenance --access public --tag "${{ steps.dist.outputs.tag }}"
+        #
+        # --ignore-scripts: skip prepublishOnly (which re-runs `npm test`) and
+        # prepack (which rebuilds dist). The gate job above already ran tests
+        # and `npm run build` already happened in this job. Re-running here is
+        # redundant and doubles the flake exposure surface — see PR #36 (TODO).
+        run: npm publish --provenance --access public --ignore-scripts --tag "${{ steps.dist.outputs.tag }}"
