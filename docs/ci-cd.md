@@ -244,70 +244,99 @@ Each is rated **Recommend / Optional / Overkill** for a solo CLI project.
 
 ## 6. npm publish reconciliation (trusted publisher)
 
-### Problem
+> **Amended by DEC-022.** The original DEC-021 design specified two publish workflows (`release.yml` + `release-beta.yml`) with two npm trusted-publisher registrations. We discovered post-merge that **npm allows only ONE trusted publisher per package**. DEC-022 consolidates to a single `publish.yml` entry point. This section reflects the post-amendment design.
 
-Current `release.yml` does both:
-- `permissions: id-token: write` (OIDC for npm trusted publishing — Sigstore provenance & token-less auth), AND
-- `env: NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}` on the `npm publish` step (classic automation token).
+### Constraint
 
-These two paths are mutually exclusive in practice. With trusted publishing configured on the npm side, `npm publish` will detect the OIDC token from `ACTIONS_ID_TOKEN_REQUEST_*` env vars and authenticate via that — but if `NODE_AUTH_TOKEN` is set, the npm CLI prefers it and falls back to classic auth, defeating the trusted-publisher integration. Worse, you keep a long-lived secret around that you don't need.
+npm permits exactly one trusted-publisher registration per package, identified by `(workflow_filename, environment)`. Adding a second entry — even with a different environment — is rejected by the npm UI.
 
 ### Target config
 
-1. **On the npm side** (one-time, npm web UI — user has confirmed this is registered):
-   - Settings → Trusted Publishers → repository `RR-AMATOK/Claude-Hatch`, workflow filename **`release.yml`** (and **`release-beta.yml`** since we are splitting), environment `release` / `release-beta`.
-   - Reference: <https://docs.npmjs.com/trusted-publishers>.
-   - **The workflow filename registered with npm must match the file path on disk exactly.** If `@pipeline-engineer` renames the workflow file, the trusted-publisher entry must be updated in lock-step or the OIDC publish step will fail with a 403.
-2. **In `release.yml`**:
-   - Keep `permissions: { contents: read, id-token: write }`.
-   - Keep `environment: release`.
-   - Keep `npm publish --provenance --access public`.
-   - Keep `registry-url: https://registry.npmjs.org` on `setup-node` (npm ≥ 11.5.1 requires it for OIDC routing).
-   - **Remove** `env: NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}` from the publish step.
-3. **In `release-beta.yml`** — identical OIDC flow but `npm publish --provenance --access public --tag beta`. `environment: release-beta` (no manual approval — beta is opt-in by definition; see §7).
-4. **In repo Settings → Secrets** — once the first OIDC publish succeeds end-to-end, **delete** `NPM_TOKEN`. Keeping it around is the actual risk: if the workflow is ever edited to re-add the env var (by a copy-paste from a tutorial), it'll silently fall back to long-lived auth.
+1. **On the npm side** (Settings → Trusted Publishers):
+   - Provider: GitHub Actions
+   - Repository: `RR-AMATOK/Claude-Hatch`
+   - Workflow filename: **`publish.yml`** (must match the file path on disk EXACTLY)
+   - Environment: **`publish`**
+   - Reference: <https://docs.npmjs.com/trusted-publishers>
+   - **Renaming `publish.yml` or the `publish` environment must be mirrored in this registration in lock-step**, or the OIDC publish step will 403.
+2. **In `publish.yml`**:
+   - Top-level `permissions: { contents: read }`
+   - Per-job `id-token: write` ONLY on the `publish` job (the `gate` job has no business minting an OIDC token)
+   - `environment: publish` on the publish job
+   - `setup-node` with `registry-url: https://registry.npmjs.org` (npm ≥ 11.5.1 requires this for OIDC routing)
+   - `npm publish --provenance --access public --tag <derived-from-ref>` — see §7 for derivation logic
+   - **No `NODE_AUTH_TOKEN`, no `NPM_TOKEN`** anywhere
+3. **In repo Settings → Environments**:
+   - Create `publish` environment with **no protection rules** (no required reviewers, no wait-timer, no deployment-branch restrictions). The env exists only to satisfy npm's registration form which requires a non-empty environment field. It is NOT a manual-approval gate.
+   - Delete the legacy `release` and `release-beta` environments left over from the DEC-021 rollout.
+4. **In repo Settings → Secrets**:
+   - `NPM_TOKEN` is no longer needed once trusted publisher works. Delete it after first OIDC publish succeeds.
+
+### Why a placeholder environment instead of an approval gate
+
+DEC-022 chose zero-friction publishes (v1) over manual-approval-on-all (v2). For a solo maintainer, self-approval is theater (the approver = the tagger, no real second-eye check), and the friction cost on every beta publish is non-trivial. The CI gate (typecheck, lint, test, build, exact version-match) is the actual safety. Optional layered safety: GitHub **tag-protection rules** (Settings → Rules → Tags) can restrict who can push tag patterns to repo admins.
 
 ### Verification ritual (post-migration)
 
-`@pipeline-security` performs this once after the YAML lands:
-
-- [ ] Push throwaway tag `v0.0.0-test.1` from a scratch branch. Confirm publish succeeds via OIDC, npm dashboard shows "Provenance: GitHub Actions" and "Auth: Trusted Publisher".
-- [ ] Unpublish the test version (within npm's 72h window).
-- [ ] Confirm the workflow filename registered with npm matches `release.yml` on disk exactly. If `release-beta.yml` is also split out, confirm its registration too.
+- [ ] Bump `package.json` on `beta` to `0.1.1-beta.0`, commit, tag `v0.1.1-beta.0`, push tag.
+- [ ] Confirm publish succeeds via OIDC; npm dashboard shows "Provenance: GitHub Actions" and "Auth: Trusted Publisher".
+- [ ] `npm view glyphling dist-tags` shows `beta: 0.1.1-beta.0`.
+- [ ] Confirm `publish.yml` contains no `NODE_AUTH_TOKEN` / `NPM_TOKEN` reference.
 - [ ] Delete `NPM_TOKEN` from repo secrets.
-- [ ] Push `v0.0.0-test.2` from a scratch branch. Confirm publish still succeeds (proves no fallback to classic auth).
-- [ ] Confirm `release.yml` and `release-beta.yml` contain no `NODE_AUTH_TOKEN` reference.
-- [ ] Record the verification in `CHANGELOG-DEV.md`.
+- [ ] Push `v0.1.1-beta.1` after a small change to confirm publishes still succeed (proves no fallback to classic auth).
+- [ ] Record the verification outcome in `CHANGELOG-DEV.md`.
 
 ---
 
 ## 7. Beta channel strategy
 
-Tag-triggered, **split** workflow, dist-tag inferred from tag shape.
+Tag-triggered, **single** workflow (`publish.yml`); dist-tag inferred from tag shape.
+
+> **Amended by DEC-022** (supersedes the original split-workflow design).
 
 ### Shape
 
-- `release.yml` triggers on `v[0-9]+.[0-9]+.[0-9]+` and `v[0-9]+.[0-9]+.[0-9]+-rc.[0-9]+` (rc → `@next`).
-- `release-beta.yml` triggers on `v[0-9]+.[0-9]+.[0-9]+-beta.[0-9]+` only. Publishes with `--tag beta`. Environment `release-beta` — no manual approval gate (beta is opt-in by definition).
-- The `gate` job in each workflow verifies `package.json` version matches the tag (already implemented in `release.yml`; mirror into `release-beta.yml`).
-- Tag stable releases from `main` only. Tag `-beta.*` from `beta` only. Tag `-rc.*` from `main` only.
+`publish.yml` triggers on three tag patterns and routes via a derived dist-tag:
+
+| Tag pattern              | dist-tag   | Publishes to    |
+|--------------------------|------------|-----------------|
+| `v[0-9]+.[0-9]+.[0-9]+`            | `latest` | `glyphling@<ver>` (default) |
+| `v[0-9]+.[0-9]+.[0-9]+-rc.[0-9]+`  | `next`   | `glyphling@<ver>-rc.N` under `@next` |
+| `v[0-9]+.[0-9]+.[0-9]+-beta.[0-9]+` | `beta`  | `glyphling@<ver>-beta.N` under `@beta` |
+
+The `publish` job derives the dist-tag from `github.ref` (single bash conditional) and runs `npm publish --provenance --access public --tag <derived>`.
+
+The `gate` job runs CI checks (typecheck, demo:lint, test, build) plus an **exact** tag↔package.json version-match check.
+
+### Why a single workflow
+
+npm allows only ONE trusted publisher per package. The original DEC-021 §7 split design (`release.yml` + `release-beta.yml`) couldn't both be registered. DEC-022 consolidates so all three flows authenticate through the single `publish.yml` registration.
 
 ### Why tag-triggered, not branch-push-triggered
 
 1. **Auditability.** Every published version is a tag. Reverting a release is `git tag -d` + a new tag. Branch-push publishing makes "what's `@beta` right now?" history-spelunking.
 2. **Idempotency.** Reruns of the workflow on the same tag are safe (npm rejects duplicate version). Branch-push triggers can publish twice if someone force-pushes.
-3. **Matches the existing pattern.** `release.yml` is already tag-triggered.
-4. **Decouples merging from publishing.** Merging into `beta` is integration soak; tagging is the explicit "I want this on the registry" act.
+3. **Decouples merging from publishing.** Merging into `beta` is integration soak; tagging is the explicit "I want this on the registry" act.
 
-### Why split into two workflow files
+### Tagging discipline
 
-- Environment + approval rules diverge: `release` may want a future manual-approval gate; `release-beta` should not.
-- npm-side trusted-publisher registrations are per-workflow-filename, so split = one registration per channel = clearer audit trail.
-- YAML conditionals on `if: startsWith(github.ref, 'refs/tags/v') && contains(github.ref, '-beta.')` get hairy; one tag-pattern per file is easier to read.
+- Stable `vX.Y.Z` — tag from `main` only.
+- RC `vX.Y.Z-rc.N` — tag from `main` only (a release candidate is a candidate FOR a stable release on `main`).
+- Beta `vX.Y.Z-beta.N` — tag from `beta` only.
+- These rules are not CI-enforced (`publish.yml` accepts the tag regardless of source branch). Optional layered safety: **tag-protection rules** in Settings → Rules → Tags to restrict tag pushing to repo admins.
+
+### Pre-release version bump (gate behavior change)
+
+The gate now requires **exact** match between the tag (`v` stripped) and `package.json#version`. So before tagging:
+
+- For `v0.1.1-beta.0`: bump `package.json` to `0.1.1-beta.0` on `beta`, commit, then tag.
+- For `v0.1.1-rc.1`: bump `package.json` to `0.1.1-rc.1` on `main`, commit, then tag.
+
+This is a behavior change from the original DEC-021 gate logic, which stripped pre-release suffixes and only checked the bare X.Y.Z. The old logic let `v0.1.1-beta.0` publish the bare `0.1.1` (because npm publishes whatever version is in `package.json`, not what the tag says) — silently corrupting `@latest`. The DEC-022 gate (EXACT match) prevents this.
 
 ### Beta promotion mechanics
 
-- Soft rule: a change is in `beta` for **at least 24 hours of soak** before promotion to `main`. Encoded as a checkbox in the PR template, **not** enforced by CI — too brittle and too easy to game.
+- Soft rule: a change is in `beta` for **at least 24 hours of soak** before promotion to `main`. Encoded as a checkbox in the PR template, **not** enforced by CI.
 - Beta tags monotonically increment: `v0.2.0-beta.1`, `v0.2.0-beta.2`, …, then stable `v0.2.0`.
 - After stable `v0.2.0` is published, leave `@beta` pointing at the last `v0.2.0-beta.N`. Users on `@beta` get the last beta, not silently promoted to stable. Move `@beta` forward only when the next pre-release cycle begins.
 
@@ -422,8 +451,7 @@ Per-job overrides only when the job needs more:
 | `ci.yml` test/build/pack         | read repo                                              | `contents: read` |
 | `security.yml` CodeQL            | read repo + write security-events                      | `contents: read, security-events: write, actions: read` |
 | `security.yml` audit             | read repo                                              | `contents: read` |
-| `release.yml` publish            | read repo + OIDC                                       | `contents: read, id-token: write` |
-| `release-beta.yml` publish       | same                                                   | `contents: read, id-token: write` |
+| `publish.yml` publish            | read repo + OIDC                                       | `contents: read, id-token: write` |
 | `dependabot` auto-merge (future) | write to PR                                            | `contents: write, pull-requests: write` (constrained to dependabot actor) |
 
 **Forbidden:** `permissions: write-all`, top-level `permissions: { contents: write }`, any job using `GITHUB_TOKEN` to push to the same repo without an explicit guard.
@@ -434,9 +462,13 @@ Per-job overrides only when the job needs more:
 
 ---
 
-## 11. Proposed DEC entry (paste-ready, do NOT land in `DECISIONS.md` yet)
+## 11. DEC entries
 
-> **Note on numbering:** `DECISIONS.md` ends at DEC-019. `docs/design/no-cap-economy-and-pi-phi-level-cap.md` reserves DEC-020 (not yet ratified into the canonical log). This CI/CD entry therefore claims **DEC-021** to avoid colliding with the in-flight DEC-020. If DEC-020 is ratified before this lands, no change. If DEC-020 is renumbered or dropped, renumber this to DEC-020.
+### DEC-021 (ratified — in `DECISIONS.md`)
+
+The original DEC-021 design landed in `DECISIONS.md` as part of PR #29. Its §7 split-publish-workflow design has been superseded by **DEC-022** below. Sections §6 and §7 of this document have been updated to reflect the post-DEC-022 design; the rest of DEC-021 (branch topology, gate matrix, branch-protection rules) remains intact.
+
+Original DEC-021 paste text (historical reference):
 
 ```markdown
 ## DEC-021 — CI/CD branch topology and gate strategy
@@ -446,6 +478,18 @@ Per-job overrides only when the job needs more:
 - **Context:** Pre-existing `main` is the real trunk (34 commits, GitHub default branch); `Diagrams` is a stale 1-commit orphan with disjoint history that needs deletion. Existing `ci.yml` triggers only on `main`; we want to extend gates to a four-channel topology (`feature/*` → `dev` → `beta` → `main`) with an explicit hotfix lane, npm beta dist-tag publishing, and trusted-publisher (OIDC) auth on releases. Existing `release.yml` mixes OIDC and `NPM_TOKEN` auth — mutually exclusive paths that defeat the trusted-publisher integration.
 - **Decision:** Adopt the topology in `docs/ci-cd.md`. Delete the orphan `Diagrams` branch and re-point local `origin/HEAD` at `main`; no trunk rename. Adopt the trigger matrix, promotion gates, and branch-protection rules described in `docs/ci-cd.md`. Adopt tag-triggered npm publishing in two split files: `release.yml` for `vX.Y.Z` (`@latest`) and `vX.Y.Z-rc.N` (`@next`); `release-beta.yml` for `vX.Y.Z-beta.N` (`@beta`). Migrate `release.yml` to OIDC trusted-publisher only and remove `NPM_TOKEN` from repo secrets after first successful OIDC publish. Add three new gates beyond the current set: `smoke-pack` (install built tarball, run `--version` + `statusline`), `audit-ci` with allowlist on PRs to `beta`/`main` (and a lighter variant on `dev`), and CodeQL SAST weekly + on PR to `main`. Coverage is collected as an artifact for visibility but does NOT gate merges. Required reviewers on `main` and `beta` are **0** — CI status checks are the gate. The PR-template `1024` invariant is updated to `1618` (⌊φ × 1000⌋) to align with DEC-020.
 - **Consequences:** Two new permanent protected branches (`dev`, `beta`) with required-status-check lists keyed off exact job names; renaming a job becomes a coordinated branch-protection edit. Publish stops working until the npm-side trusted-publisher config is set up (user has confirmed it is registered; verification ritual in `docs/ci-cd.md` §6). Beta releases require a tag push (no auto-publish on merge to `beta`) — adds friction by design as an explicit "I want this published" act. Hotfix lane is documented, bypasses `dev`/`beta`, and requires back-port — discipline-enforced, not CI-enforced. Workflow filenames are now load-bearing for OIDC: any rename to `release.yml` / `release-beta.yml` must be mirrored in the npm trusted-publisher registration in lock-step.
+```
+
+### DEC-022 (paste-ready, append to `DECISIONS.md` as part of this PR)
+
+```markdown
+## DEC-022 — Single npm publish workflow (consolidates DEC-021 §7)
+- **Date:** 2026-04-26
+- **Status:** Accepted (supersedes the split-workflow portion of DEC-021)
+- **Decided by:** @product-owner (user-confirmed via "v1" recommendation)
+- **Context:** DEC-021 §7 specified two publish workflows (`release.yml` for stable + RC, `release-beta.yml` for beta) with two separate npm trusted-publisher registrations. After PR #29 landed, we discovered (via the npm UI) that **npm allows only ONE trusted publisher per package** — the second registration attempt is rejected. The split design is incompatible with npm's constraint. Additionally, the original gate logic stripped pre-release suffixes from tags before comparing to `package.json`, which let `v0.1.1-beta.0` publish the bare `0.1.1` version (npm reads version from `package.json`, not the tag), silently corrupting `@latest`.
+- **Decision:** Consolidate to a single `.github/workflows/publish.yml` that triggers on all three tag patterns (stable, rc, beta) and routes to the correct npm dist-tag (`@latest`, `@next`, `@beta`) by deriving from the tag shape in a single bash step. Single npm trusted-publisher registration: workflow `publish.yml`, environment `publish` (a placeholder env in repo Settings → Environments with NO protection rules — npm's registration form requires a non-empty environment field, but we do not want manual approval). All publishes proceed without manual approval; the CI gate (typecheck, demo:lint, test, build, and an EXACT tag↔package.json version-match check) is the only gate. Pre-release versions must be reflected in `package.json` before tagging (e.g., bump `package.json` to `0.1.1-beta.0` on `beta` before tagging `v0.1.1-beta.0`). Delete `release.yml` and `release-beta.yml`. Delete the legacy `release` and `release-beta` GitHub environments. Optional layered safety: add tag-protection rules in Settings → Rules → Tags to restrict who can push tag patterns.
+- **Consequences:** Manual-approval click on stable releases (the `release` env's required-reviewer rule from DEC-021's rollout) is gone. For solo, self-approval is theater — the CI gate is the actual safety. Adding collaborators later means a 5-min migration to add `environment: release` with required reviewers (reversible). Pre-release version bumps are now mandatory before tagging (was: implicit, gate-tolerated). Workflow filenames are still load-bearing for OIDC: renaming `publish.yml` or the `publish` environment requires updating the npm trusted-publisher registration in lock-step. The original `release.yml` and `release-beta.yml` are deleted.
 ```
 
 ---

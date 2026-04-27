@@ -8,6 +8,9 @@
  *       and signal collector startup once downstream modules are ready.
  */
 
+import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
 import React from "react";
 import { render } from "ink";
 import { App } from "./render/App.js";
@@ -31,7 +34,38 @@ import { runDoctor } from "./commands/doctor.js";
 import { setupCommand, parseSetupArgs } from "./commands/setup.js";
 import { installCommand } from "./commands/install.js";
 
+/**
+ * Resolve the bundled package.json so `glyphling --version` reports the
+ * shipped version without drift. Tries dev (src/cli.tsx → ../package.json)
+ * and production (dist/src/cli.js → ../../package.json) paths in order.
+ */
+export function readPackageVersion(): string {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const candidates = [
+    path.resolve(here, "..", "package.json"),
+    path.resolve(here, "..", "..", "package.json"),
+  ];
+  for (const p of candidates) {
+    try {
+      const raw = fs.readFileSync(p, "utf8");
+      const parsed = JSON.parse(raw) as { name?: string; version?: string };
+      if (parsed.name === "glyphling" && typeof parsed.version === "string") {
+        return parsed.version;
+      }
+    } catch {
+      // try next candidate
+    }
+  }
+  return "unknown";
+}
+
 export async function main(argv: string[]): Promise<number> {
+  // `glyphling --version` / `-V` — zero side effects, runs before anything else.
+  if (argv[0] === "--version" || argv[0] === "-V") {
+    process.stdout.write(`glyphling ${readPackageVersion()}\n`);
+    return 0;
+  }
+
   // Resolve state home — will throw if DEC-008 guard trips.
   const config = resolveStateHome();
 
@@ -148,7 +182,7 @@ export async function main(argv: string[]): Promise<number> {
     }
   }
 
-  void argv; // TODO: parse --help, --version, subcommands
+  void argv; // TODO: parse --help, subcommands
 
   const { waitUntilExit, unmount } = render(<App config={config} />);
 
@@ -171,13 +205,17 @@ export async function main(argv: string[]): Promise<number> {
   return 0;
 }
 
-// Run when executed directly (tsx src/cli.tsx or dist/cli.js)
-main(process.argv.slice(2)).then(
-  (code) => process.exit(code),
-  (err: unknown) => {
-    // Surface clean error messages for the DEC-008 guard and schema errors.
-    const message = err instanceof Error ? err.message : String(err);
-    process.stderr.write(message + "\n");
-    process.exit(1);
-  }
-);
+// Run when executed directly (tsx src/cli.tsx or dist/src/cli.js via bin.ts).
+// Skip the auto-run inside vitest so test files can import `main` and
+// `readPackageVersion` without triggering a real CLI dispatch.
+if (process.env.VITEST !== "true") {
+  main(process.argv.slice(2)).then(
+    (code) => process.exit(code),
+    (err: unknown) => {
+      // Surface clean error messages for the DEC-008 guard and schema errors.
+      const message = err instanceof Error ? err.message : String(err);
+      process.stderr.write(message + "\n");
+      process.exit(1);
+    }
+  );
+}
