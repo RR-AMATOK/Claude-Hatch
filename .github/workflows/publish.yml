@@ -109,8 +109,13 @@ jobs:
       # falls through to token auth. With NPM_TOKEN intentionally absent
       # (DEC-022), npm 10 publishes return 404 from the registry. npm 11.5.1
       # added full trusted-publisher integration. Upgrade explicitly here.
+      #
+      # `sudo` avoids the known self-upgrade race where the in-flight npm
+      # process partially overwrites itself before transitive deps land
+      # (PR #41 hit MODULE_NOT_FOUND `promise-retry`). With sudo the install
+      # runs as root and completes atomically before the next npm invocation.
       - name: Upgrade npm for OIDC trusted publishing (>= 11.5.1)
-        run: npm install --global npm@latest
+        run: sudo npm install --global npm@latest
 
       - run: npm ci
       - run: npm run build
