@@ -136,10 +136,19 @@ jobs:
 
       - name: Publish with provenance
         # OIDC auth via npm trusted publisher (workflow=publish.yml, env=publish).
-        # No NODE_AUTH_TOKEN — see DEC-022 and docs/ci-cd.md §6.
+        # See DEC-022 and docs/ci-cd.md §6.
+        #
+        # `unset NODE_AUTH_TOKEN`: actions/setup-node@v6 with `registry-url`
+        # writes an .npmrc containing `_authToken=${NODE_AUTH_TOKEN}` AND
+        # exports a placeholder NODE_AUTH_TOKEN. npm then reads the placeholder
+        # as a real token and uses it for auth — bypassing the OIDC trusted-
+        # publisher path entirely and 404-ing at the registry. Clearing the
+        # env var makes the .npmrc expand to empty `_authToken=` so npm
+        # detects no static auth and falls through to OIDC.
         #
         # --ignore-scripts: skip prepublishOnly (which re-runs `npm test`) and
-        # prepack (which rebuilds dist). The gate job above already ran tests
-        # and `npm run build` already happened in this job. Re-running here is
-        # redundant and doubled flake exposure (see PR #37).
-        run: npm publish --provenance --access public --ignore-scripts --tag "${{ steps.dist.outputs.tag }}"
+        # prepack (which rebuilds dist). The gate above already ran tests and
+        # `npm run build` already happened in this job (PR #37).
+        run: |
+          unset NODE_AUTH_TOKEN
+          npm publish --provenance --access public --ignore-scripts --tag "${{ steps.dist.outputs.tag }}"
