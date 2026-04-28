@@ -18,9 +18,9 @@
  *
  *   Mechanism 3 — Daily XP caps (tested via xp/engine.ts — see engine-caps.test.ts)
  *
- *   Mechanism 4 — Monotonic clock guards
+ *   Mechanism 4 — Monotonic clock guards (DEC-022)
  *     - Backward timestamp jump → clamped, signal.rejected clock.jump.backward
- *     - Forward jump >24h → clamped to lastEventAt+60s, signal.rejected clock.jump.forward
+ *     - Forward jump >24h → daemon.resync emitted; ts accepted as-is (DEC-022)
  *     - Normal forward jumps within 24h pass through unchanged
  *
  * All tests use os.tmpdir() — never ~/.claude/ (DEC-008).
@@ -413,38 +413,216 @@ describe("Mechanism 4 — monotonic clock guards", () => {
     expect(backwardRej).toBeDefined();
   });
 
-  it("forward jump >24h is clamped to lastEventAt+60s and emits clock.jump.forward", async () => {
+  it("daemon.resync after >24h offline gap, single emit", async () => {
+    const config = await makeTmpConfig();
+    await writeState(config, makeEmptyState());
+
+    const t0 = Date.now();
+
+    // Anchor: first event at t0
+    const e1 = makeTestEvent({
+      id: "resync-e1",
+      ts: new Date(t0).toISOString(),
+    });
+    await appendEvent(config, e1);
+
+    // Second event: 48 hours ahead
+    const t0Plus48h = t0 + 48 * 3600 * 1000;
+    const e2 = makeTestEvent({
+      id: "resync-e2",
+      ts: new Date(t0Plus48h).toISOString(),
+    });
+    const { appended, rejections } = await appendEvent(config, e2);
+
+    // Timestamp must NOT be clamped — accepted as-is
+    expect(new Date(appended.ts).getTime()).toBe(t0Plus48h);
+
+    // Zero signal.rejected with clock.jump.forward
+    const forwardRej = rejections.filter(
+      (r) =>
+        r.type === "signal.rejected" &&
+        (r.payload as { reason: string }).reason === "clock.jump.forward"
+    );
+    expect(forwardRej).toHaveLength(0);
+
+    // Exactly one daemon.resync
+    const resyncs = rejections.filter((r) => r.type === "daemon.resync");
+    expect(resyncs).toHaveLength(1);
+    const resync = resyncs[0]!;
+    const p = resync.payload as { from: string; to: string; gapMs: number; reason: string };
+    expect(p.from).toBe(new Date(t0).toISOString());
+    expect(p.to).toBe(new Date(t0Plus48h).toISOString());
+
+    // lastEventAt updated to the real ts
+    const stateAfter = await readState(config);
+    expect(stateAfter!.globals.lastEventAt).toBe(t0Plus48h);
+  });
+
+  it("100 emits over 5 minutes after 48h gap converge to wall-clock", async () => {
+    const config = await makeTmpConfig();
+    await writeState(config, makeEmptyState());
+
+    const t0 = Date.now();
+
+    // Anchor at t0
+    await appendEvent(config, makeTestEvent({
+      id: "conv-anchor",
+      ts: new Date(t0).toISOString(),
+    }));
+
+    const gapBase = t0 + 48 * 3600 * 1000;
+    let totalResyncs = 0;
+    let totalRejectedForward = 0;
+
+    for (let i = 0; i < 100; i++) {
+      const ts = new Date(gapBase + i * 3000).toISOString();
+      const { rejections } = await appendEvent(config, makeTestEvent({
+        id: `conv-${i}`,
+        ts,
+      }));
+      totalResyncs += rejections.filter((r) => r.type === "daemon.resync").length;
+      totalRejectedForward += rejections.filter(
+        (r) =>
+          r.type === "signal.rejected" &&
+          (r.payload as { reason: string }).reason === "clock.jump.forward"
+      ).length;
+    }
+
+    // Exactly one daemon.resync — only the first emit triggers the gap
+    expect(totalResyncs).toBe(1);
+    // Zero forward-clamp rejections
+    expect(totalRejectedForward).toBe(0);
+
+    // lastEventAt settled at the last emit's ts
+    const stateAfter = await readState(config);
+    expect(stateAfter!.globals.lastEventAt).toBe(gapBase + 99 * 3000);
+
+    // Chain hash is intact
+    const replay = await replayEvents(config, 0, "");
+    expect(replay.chainBroken).toBe(false);
+  });
+
+  it("12h gap does not trigger daemon.resync", async () => {
+    const config = await makeTmpConfig();
+    await writeState(config, makeEmptyState());
+
+    const t0 = Date.now();
+
+    // Anchor at t0
+    const e1 = makeTestEvent({
+      id: "gap12-e1",
+      ts: new Date(t0).toISOString(),
+    });
+    await appendEvent(config, e1);
+
+    // Second event: 12 h later (below the 24 h threshold)
+    const t0Plus12h = t0 + 12 * 3600 * 1000;
+    const e2 = makeTestEvent({
+      id: "gap12-e2",
+      ts: new Date(t0Plus12h).toISOString(),
+    });
+    const { appended, rejections } = await appendEvent(config, e2);
+
+    // Zero daemon.resync events
+    const resyncs = rejections.filter((r) => r.type === "daemon.resync");
+    expect(resyncs).toHaveLength(0);
+
+    // Event accepted at its real ts
+    expect(new Date(appended.ts).getTime()).toBe(t0Plus12h);
+
+    // lastEventAt updated
+    const stateAfter = await readState(config);
+    expect(stateAfter!.globals.lastEventAt).toBe(t0Plus12h);
+  });
+
+  it("backward jump still emits clock.jump.backward (DEC-022: backward-clamp untouched)", async () => {
     const config = await makeTmpConfig();
     await writeState(config, makeEmptyState());
 
     const now = Date.now();
 
-    // First event: now
+    // First event: 1 hour in the past
     const e1 = makeTestEvent({
-      id: "clock-e1",
-      ts: new Date(now).toISOString(),
+      id: "bwd-e1",
+      ts: new Date(now - 3600 * 1000).toISOString(),
     });
     await appendEvent(config, e1);
 
-    // Second event: 48 hours in the future
+    // Second event: 2 hours in the past (backward jump)
     const e2 = makeTestEvent({
-      id: "clock-e2",
-      ts: new Date(now + 48 * 3600 * 1000).toISOString(),
+      id: "bwd-e2",
+      ts: new Date(now - 7200 * 1000).toISOString(),
     });
     const { appended, rejections } = await appendEvent(config, e2);
 
-    // Timestamp should be clamped to e1.ts + 60s
+    // Timestamp should be clamped (not earlier than e1)
     const clampedTs = new Date(appended.ts).getTime();
-    const e1Ts = new Date(now).getTime();
-    // Allow a few ms for processing time
-    expect(clampedTs).toBeLessThanOrEqual(e1Ts + 60_000 + 1000);
+    const e1Ts = new Date(e1.ts).getTime();
     expect(clampedTs).toBeGreaterThanOrEqual(e1Ts);
 
-    // Should have emitted a forward-jump rejection
-    const forwardRej = rejections.find(
-      (r) => (r.payload as { reason: string }).reason === "clock.jump.forward"
+    // Must have emitted a backward-jump rejection
+    const backwardRej = rejections.find(
+      (r) =>
+        r.type === "signal.rejected" &&
+        (r.payload as { reason: string }).reason === "clock.jump.backward"
     );
-    expect(forwardRej).toBeDefined();
+    expect(backwardRej).toBeDefined();
+
+    // Must NOT have emitted a daemon.resync (backward path is unaffected by DEC-022)
+    const resyncs = rejections.filter((r) => r.type === "daemon.resync");
+    expect(resyncs).toHaveLength(0);
+  });
+
+  it("live-pathology repro: 26h gap, 10 fresh emits in 10s converge", async () => {
+    const config = await makeTmpConfig();
+    await writeState(config, makeEmptyState());
+
+    const now = Date.now();
+    // Simulate Bramble's stuck chain: lastEventAt is 26h in the past
+    const staleTs = now - 26 * 3600 * 1000;
+
+    // Write an anchor event at staleTs so lastEventAt = staleTs
+    await appendEvent(config, makeTestEvent({
+      id: "bramble-anchor",
+      ts: new Date(staleTs).toISOString(),
+    }));
+
+    let totalResyncs = 0;
+    let totalRejectedForward = 0;
+    let totalXp = 0;
+
+    // Emit 10 tokens.delta events at now, now+1s, ..., now+9s
+    for (let i = 0; i < 10; i++) {
+      const ts = new Date(now + i * 1000).toISOString();
+      const { rejections, appended } = await appendEvent(
+        config,
+        makeTestEvent({
+          id: `bramble-emit-${i}`,
+          type: "tokens.delta",
+          ts,
+          xpDelta: 10,
+        })
+      );
+      totalResyncs += rejections.filter((r) => r.type === "daemon.resync").length;
+      totalRejectedForward += rejections.filter(
+        (r) =>
+          r.type === "signal.rejected" &&
+          (r.payload as { reason: string }).reason === "clock.jump.forward"
+      ).length;
+      totalXp += appended.xpDelta ?? 0;
+    }
+
+    // Exactly 1 daemon.resync (only the first emit exceeds the 24h threshold)
+    expect(totalResyncs).toBe(1);
+    // Zero clock.jump.forward rejections
+    expect(totalRejectedForward).toBe(0);
+    // All 10 events delivered with their xpDelta
+    expect(totalXp).toBe(100);
+
+    // lastEventAt is within 30 seconds of now (converged to wall-clock)
+    const stateAfter = await readState(config);
+    expect(stateAfter!.globals.lastEventAt).toBeGreaterThanOrEqual(now);
+    expect(stateAfter!.globals.lastEventAt).toBeLessThanOrEqual(now + 30_000);
   });
 
   it("forward jump within 24h passes without rejection (normal operation)", async () => {
