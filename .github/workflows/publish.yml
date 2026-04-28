@@ -113,13 +113,27 @@ jobs:
           cache: npm
 
       # Node 22.x ships with npm 10.x. npm 11.5.1 added full OIDC trusted-
-      # publisher integration. `sudo` avoids the self-upgrade race where the
-      # in-flight npm process partially overwrites its own files mid-install
-      # (PR #41 hit MODULE_NOT_FOUND `promise-retry`).
+      # publisher integration; we need it on the PATH for the publish step.
+      #
+      # Corepack (preinstalled with Node 22.x) is the official mechanism for
+      # selecting a package-manager version. It updates the npm symlink in the
+      # active PATH so subsequent `npm` invocations resolve to the new version.
+      #
+      # Why not `[sudo] npm install -g npm@latest`?
+      #   - Without sudo (PR #41): self-upgrade race (MODULE_NOT_FOUND
+      #     `promise-retry` while in-flight npm overwrites its own files).
+      #   - With sudo (PR #42): installs to /usr/local, but the runner's npm
+      #     is in /opt/hostedtoolcache/.../bin and that path is searched first.
+      #     Result: install "succeeds" but `npm --version` still reports 10.x
+      #     (verified empirically — see this PR's predecessor run logs).
+      #
+      # Corepack avoids both issues.
       - name: Upgrade npm for OIDC trusted publishing (>= 11.5.1)
         run: |
-          sudo npm install --global npm@latest
+          corepack enable
+          corepack prepare npm@latest --activate
           echo "npm version after upgrade: $(npm --version)"
+          which npm
 
       - run: npm ci
       - run: npm run build
