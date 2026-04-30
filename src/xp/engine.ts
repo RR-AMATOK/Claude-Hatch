@@ -289,6 +289,11 @@ export function applyEvent(
       ...pet,
       lastPlayedAt: event.ts,
     };
+  } else if (event.type === "pet.petted") {
+    timestampOnlyPet = {
+      ...pet,
+      lastPettedAt: event.ts,
+    };
   } else if (event.type === "pet.hatched") {
     timestampOnlyPet = {
       ...pet,
