@@ -1,6 +1,6 @@
 {
   "name": "glyphling",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "A Node + TypeScript + Ink terminal pet that accompanies Claude Code sessions.",
   "license": "MIT",
   "type": "module",
