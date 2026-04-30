@@ -73,6 +73,7 @@ export type SpeciesFrameSceneKey =
   | "idle-baseline"
   | "idle-energetic"
   | "idle-stoic"
+  | "eating"
   | "playing"
   | "petted";
 
@@ -286,6 +287,31 @@ const SHARD_ADULT_ENERGETIC: readonly CompactFrame[] = [
   { content: " /**oo**\\\n \\\\\\||///", durationMs: 2000 },
 ];
 
+// Shard adult playing — 4 frames, 400ms each. Eyes track the toy then jump
+// (legs flipped on caught). Width = 9 visible cells per row, matching baseline.
+const SHARD_ADULT_PLAYING: readonly CompactFrame[] = [
+  { content: " /**oo**\\\n \\\\\\||///", durationMs: 400 }, // steady
+  { content: " /**Oo**\\\n \\\\\\||///", durationMs: 400 }, // track right
+  { content: " /**oO**\\\n \\\\\\||///", durationMs: 400 }, // track left
+  { content: " /**^^**\\\n ///||\\\\\\", durationMs: 400 }, // caught + jump (legs flipped)
+];
+
+// Shard adult petted — 2 frames, 1000ms each. Eyes close in contentment then
+// open warm. Width-consistent at 9 cells per row.
+const SHARD_ADULT_PETTED: readonly CompactFrame[] = [
+  { content: " /**--**\\\n \\\\\\||///", durationMs: 1000 }, // eyes close
+  { content: " /**^^**\\\n \\\\\\||///", durationMs: 1000 }, // content smile
+];
+
+// Shard adult eating — 3 frames, 1000ms each. Distinct from idle: row1 shows
+// food crumbs in frame 0 (the `..` in place of `||`), then mid-bite squint,
+// then satisfied smile. Width-consistent at 9 cells per row.
+const SHARD_ADULT_EATING: readonly CompactFrame[] = [
+  { content: " /**oo**\\\n \\\\\\..///", durationMs: 1000 }, // food approaches (crumbs)
+  { content: " /**xx**\\\n \\\\\\||///", durationMs: 1000 }, // eyes squint, mid-bite
+  { content: " /**^^**\\\n \\\\\\||///", durationMs: 1000 }, // satisfied smile
+];
+
 const SHARD_ADULT_STOIC: readonly CompactFrame[] = [
   { content: " /**--**\\\n \\\\\\||///", durationMs: 3000 },
   { content: " /**oo**\\\n \\\\\\||///", durationMs: 3000 },
@@ -413,6 +439,9 @@ const SPECIES_FRAMES: SpeciesFramesTable = {
       "idle-baseline": SHARD_ADULT_BASELINE,
       "idle-energetic": SHARD_ADULT_ENERGETIC,
       "idle-stoic": SHARD_ADULT_STOIC,
+      eating: SHARD_ADULT_EATING,
+      playing: SHARD_ADULT_PLAYING,
+      petted: SHARD_ADULT_PETTED,
     },
   },
   bloom: {
@@ -447,6 +476,7 @@ export const SPECIES_FRAME_SCENE_KEYS: readonly SpeciesFrameSceneKey[] = [
   "idle-baseline",
   "idle-energetic",
   "idle-stoic",
+  "eating",
   "playing",
   "petted",
 ] as const;
