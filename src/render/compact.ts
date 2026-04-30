@@ -984,9 +984,15 @@ export function assembleCompactOutput(
   const mood = deriveMood(pet, nowMs);
   const frame = pickCompactFrame(pet, sceneKey, tick);
 
-  // For death and level-up, the frame content already has its own rows
-  // For normal scenes, prefer per-species authored frames (TODO-025); else
-  // fall back to the legacy eye-blink-on-static-silhouette path.
+  // For death and level-up, the frame content already has its own rows.
+  // For all other scenes, prefer per-species authored frames (TODO-025).
+  // If species art is missing and the scene is a *reactive* one (eating /
+  // playing / petted / sick / sleeping), fall back to the generic
+  // SCENE_FRAMES content — those frames are explicitly designed to look
+  // different from idle, so reusing the species silhouette would defeat
+  // the whole point of the reaction. Only idle-* scenes fall through to
+  // the silhouette + eye-blink path, since idle's intent is "show the
+  // species at rest."
   let artRows: string;
   if (sceneKey === "death" || sceneKey === "level-up") {
     artRows = frame.content;
@@ -994,14 +1000,21 @@ export function assembleCompactOutput(
     const stage = getLifeStage(deriveLevel(pet.xp));
     const speciesFrames = getSpeciesCompactFrames(pet.eggType, stage, sceneKey);
     if (speciesFrames !== null) {
-      // Per-species authored frames: pure tick-modulo lookup. The frame's
-      // content already paints the species silhouette, so no blink overlay
-      // is needed (the frame cycle itself carries the "alive" signal).
+      // Per-species authored frames: pure tick-modulo lookup.
       const idx = tick % speciesFrames.length;
       artRows = speciesFrames[idx]!.content;
+    } else if (
+      sceneKey === "eating" ||
+      sceneKey === "playing" ||
+      sceneKey === "petted" ||
+      sceneKey === "sick" ||
+      sceneKey === "sleeping"
+    ) {
+      // Reactive scene without per-species art: render the generic
+      // SCENE_FRAMES content — must visibly differ from idle.
+      artRows = frame.content;
     } else {
-      // Legacy fallback for scenes not yet authored per species: use the
-      // static silhouette and overlay the eye-blink to keep the pet alive.
+      // idle-*: silhouette + eye-blink overlay.
       const sil = SILHOUETTES[pet.eggType][stage];
       const row0 = applyEyeBlink(sil.narrow[0], pet.eggType, stage, tick);
       artRows = row0 + "\n" + sil.narrow[1];
@@ -1203,8 +1216,10 @@ export function assembleWideOutput(
     // Row 1: HUD row
     const hudRow = buildHudRow(hudLeft);
 
-    // Rows 2-3: per-species authored frames (TODO-025) preferred; else
-    // legacy eye-blink-on-static-silhouette; death/level-up use scene art.
+    // Rows 2-3: per-species authored frames (TODO-025) preferred; reactive
+    // scenes (eating/playing/petted/sick/sleeping) fall back to generic
+    // SCENE_FRAMES content rather than silhouette+blink so they visibly
+    // differ from idle. idle-* and death/level-up keep their existing paths.
     let row2: string;
     let row3: string;
     if (sceneKey === "death" || sceneKey === "level-up") {
@@ -1217,6 +1232,16 @@ export function assembleWideOutput(
       if (speciesFrames !== null) {
         const idx = tick % speciesFrames.length;
         const contentRows = speciesFrames[idx]!.content.split("\n");
+        row2 = contentRows[0] ?? "";
+        row3 = contentRows[1] ?? "";
+      } else if (
+        sceneKey === "eating" ||
+        sceneKey === "playing" ||
+        sceneKey === "petted" ||
+        sceneKey === "sick" ||
+        sceneKey === "sleeping"
+      ) {
+        const contentRows = frame.content.split("\n");
         row2 = contentRows[0] ?? "";
         row3 = contentRows[1] ?? "";
       } else {
