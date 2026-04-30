@@ -185,6 +185,13 @@ export const PetSchema = z
      * Optional with null default — backwards-compatible with existing state files.
      */
     lastEvolvedAt: ISO8601Schema.nullable().optional().default(null),
+    /**
+     * ISO timestamp of the most recent pet.petted (scritch) event.
+     * Set by the XP engine reducer when a pet.petted event is applied.
+     * Used by pickScene() to trigger the petted scene within the pet window.
+     * Optional with null default — backwards-compatible with existing state files.
+     */
+    lastPettedAt: ISO8601Schema.nullable().optional().default(null),
   })
   .refine(
     (p) => {
@@ -274,6 +281,7 @@ export const EventTypeSchema = z.enum([
   "daily.checkin",
   "pet.fed",
   "pet.played",
+  "pet.petted",
   "pet.paused",
   "pet.resumed",
   "level.up",

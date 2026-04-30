@@ -40,6 +40,23 @@ export const REFRESH_MS = 1000;
  */
 export const LEVEL_UP_WINDOW_MS = 3000;
 
+/**
+ * Reaction-scene window constants for eating, playing, and petted.
+ *
+ * At 1 Hz the statusline polls once per second. Because a trigger can land
+ * anywhere within that second (e.g. at X+0.7 s), the first visible tick may
+ * only be at X+1 s (0.3 s of window already consumed). To guarantee the
+ * user sees at least 4 consecutive ticks of the reaction scene we need:
+ *
+ *   window ≥ 4 + 1 = 5 s  (worst-case phase offset eats ~1 s)
+ *
+ * Eat and play use 6 s (5–6 ticks at 1 Hz, comfortable margin).
+ * Petted uses 5 s (exactly 4–5 ticks — meets the 4-tick floor).
+ */
+export const EAT_WINDOW_MS = 6000;
+export const PLAY_WINDOW_MS = 6000;
+export const PET_WINDOW_MS = 5000;
+
 /** Hard ceiling: columns per row (narrow tier). */
 const MAX_COLS = 60;
 
@@ -271,6 +288,8 @@ export type SceneKey =
   | "idle-energetic"
   | "idle-stoic"
   | "eating"
+  | "playing"
+  | "petted"
   | "sleeping"
   | "sick"
   | "level-up"
@@ -475,6 +494,26 @@ const EATING_FRAMES: readonly CompactFrame[] = [
   { content: " /[^-^]\\\n +=|~~|=+", durationMs: 1000 },
 ];
 
+// Playing — 4 frames, one-shot (~400ms each — quicker, energetic cadence).
+// Fallback art used when no per-species entry exists in species-frames.ts.
+// Eye tracks a bouncing ball (*) across frames; arm swing on row 2.
+// All frames: row0 = 9 chars, row1 = 9 chars.
+const PLAYING_FRAMES: readonly CompactFrame[] = [
+  { content: " /[o-o]\\ \n +=|--|=+", durationMs: 400 },
+  { content: " /[O-o]\\ \n +=|/--|=+", durationMs: 400 },
+  { content: " /[o-O]\\ \n +=|--\\|=+", durationMs: 400 },
+  { content: " /[^-^]\\ \n +=|--|=+", durationMs: 400 },
+];
+
+// Petted — 2 frames, slow and gentle.
+// Fallback art used when no per-species entry exists in species-frames.ts.
+// Eyes close in contentment (frame 0); warm open eyes + tilde mouth (frame 1).
+// All frames: row0 = 8 chars, row1 = 9 chars.
+const PETTED_FRAMES: readonly CompactFrame[] = [
+  { content: " /[-_-]\\\n +=|~~|=+", durationMs: 1000 },
+  { content: " /[^-^]\\\n +=|~~|=+", durationMs: 1000 },
+];
+
 // Sleeping — 2 frames, 4s cycle
 const SLEEPING_FRAMES: readonly CompactFrame[] = [
   { content: " /[-_-]\\ z\n +=|..|=+ Z", durationMs: 2000 },
@@ -513,6 +552,8 @@ const SCENE_FRAMES: Record<SceneKey, readonly CompactFrame[]> = {
   "idle-energetic": IDLE_ENERGETIC_FRAMES,
   "idle-stoic": IDLE_STOIC_FRAMES,
   eating: EATING_FRAMES,
+  playing: PLAYING_FRAMES,
+  petted: PETTED_FRAMES,
   sleeping: SLEEPING_FRAMES,
   sick: SICK_FRAMES,
   "level-up": LEVEL_UP_FRAMES,
@@ -647,9 +688,19 @@ export function deriveMood(pet: Pet, nowMs: number): MoodKey {
  *
  * Ascendants (L1618, DEC-019 D6 / DEC-020) never enter the sick scene.
  *
- * Level-up scene: plays for LEVEL_UP_WINDOW_MS (3 s) after `pet.lastLevelUpAt`
- * is set by the XP engine. The one-shot statusline renderer (DEC-016) reads
- * this from the persisted pet state — no coordination required.
+ * Priority chain (top wins):
+ *   death        — if diedAt !== null
+ *   level-up     — windowed: within LEVEL_UP_WINDOW_MS of lastLevelUpAt
+ *   sick         — neglect ≥ 1 day (non-ascendant only)
+ *   eating       — windowed: within EAT_WINDOW_MS of lastFedAt
+ *   playing      — windowed: within PLAY_WINDOW_MS of lastPlayedAt
+ *   petted       — windowed: within PET_WINDOW_MS of lastPettedAt
+ *   sleeping     — currently paused
+ *   idle-*       — personality-based fallback
+ *
+ * Interaction windows are sized so each reaction plays for at least 4 ticks
+ * at 1 Hz regardless of where in the polling phase the trigger landed
+ * (see EAT_WINDOW_MS / PLAY_WINDOW_MS / PET_WINDOW_MS constants above).
  */
 export function pickScene(pet: Pet, nowMs: number): SceneKey {
   if (pet.diedAt !== null) return "death";
@@ -666,10 +717,27 @@ export function pickScene(pet: Pet, nowMs: number): SceneKey {
 
   // Ascendants are immune to the sick scene (DEC-019 D6).
   if (isAscendant(pet)) {
-    // Fall through to personality-based idle selection below.
+    // Fall through to interaction/sleeping/idle selection below.
   } else {
     const neglect = pet.accumulatedNeglectSeconds;
     if (neglect >= NEGLECT_1D) return "sick";
+  }
+
+  // Interaction reaction windows — checked in priority order.
+  // Each window is wide enough for ≥4 visible 1 Hz ticks (see constant comments).
+  const lastFedAt = pet.lastFedAt ?? null;
+  if (lastFedAt !== null && nowMs - Date.parse(lastFedAt) < EAT_WINDOW_MS) {
+    return "eating";
+  }
+
+  const lastPlayedAt = pet.lastPlayedAt ?? null;
+  if (lastPlayedAt !== null && nowMs - Date.parse(lastPlayedAt) < PLAY_WINDOW_MS) {
+    return "playing";
+  }
+
+  const lastPettedAt = pet.lastPettedAt ?? null;
+  if (lastPettedAt !== null && nowMs - Date.parse(lastPettedAt) < PET_WINDOW_MS) {
+    return "petted";
   }
 
   // Sleeping: check pause

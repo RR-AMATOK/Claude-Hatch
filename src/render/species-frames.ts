@@ -65,11 +65,16 @@ import type { EggType } from "../state/schema.js";
  * Renamed from `SceneKey` to `SpeciesFrameSceneKey` so importing modules
  * don't accidentally widen the `SceneKey` type — the statusline still emits
  * eat/sleep/sick/level-up/death keys; this table just doesn't cover them yet.
+ *
+ * `playing` and `petted` added here (partial coverage — shard hatchling first,
+ * other species/stages fall through to SCENE_FRAMES fallback in compact.ts).
  */
 export type SpeciesFrameSceneKey =
   | "idle-baseline"
   | "idle-energetic"
-  | "idle-stoic";
+  | "idle-stoic"
+  | "playing"
+  | "petted";
 
 // ---------------------------------------------------------------------------
 // Per-species art conventions (recap of compact-frames.md §3.2)
@@ -230,6 +235,24 @@ const SHARD_HATCHLING_STOIC: readonly CompactFrame[] = [
   { content: " /oo\\\n \\\\//", durationMs: 3000 },
 ];
 
+// Shard hatchling playing — 4 frames, ~400ms each.
+// Eye tracks an imaginary ball; body wobble on alternating frames.
+// row0 width = 5, row1 width = 4. Width-consistent within this scene.
+const SHARD_HATCHLING_PLAYING: readonly CompactFrame[] = [
+  { content: " /oo\\\n \\\\//", durationMs: 400 }, // steady, ready
+  { content: " /Oo\\\n \\\\//", durationMs: 400 }, // eye flicks right — tracking
+  { content: " /oO\\\n \\\\//", durationMs: 400 }, // eye flicks left — tracking back
+  { content: " /^^\\\n \\\\//", durationMs: 400 }, // excited — caught it!
+];
+
+// Shard hatchling petted — 2 frames, slow and gentle.
+// Eyes close in contentment then open warm.
+// row0 width = 5, row1 width = 5. Width-consistent within this scene.
+const SHARD_HATCHLING_PETTED: readonly CompactFrame[] = [
+  { content: " /--\\\n \\\\//", durationMs: 1000 }, // eyes close — pure contentment
+  { content: " /^^\\\n \\\\//", durationMs: 1000 }, // eyes open warm — happy sigh
+];
+
 const SHARD_JUVENILE_BASELINE: readonly CompactFrame[] = [
   { content: " /*oo*\\\n \\\\||//", durationMs: 2000 },
   { content: " /*oo*\\\n \\\\||//", durationMs: 2000 },
@@ -378,6 +401,8 @@ const SPECIES_FRAMES: SpeciesFramesTable = {
       "idle-baseline": SHARD_HATCHLING_BASELINE,
       "idle-energetic": SHARD_HATCHLING_ENERGETIC,
       "idle-stoic": SHARD_HATCHLING_STOIC,
+      playing: SHARD_HATCHLING_PLAYING,
+      petted: SHARD_HATCHLING_PETTED,
     },
     juvenile: {
       "idle-baseline": SHARD_JUVENILE_BASELINE,
@@ -422,6 +447,8 @@ export const SPECIES_FRAME_SCENE_KEYS: readonly SpeciesFrameSceneKey[] = [
   "idle-baseline",
   "idle-energetic",
   "idle-stoic",
+  "playing",
+  "petted",
 ] as const;
 
 /**

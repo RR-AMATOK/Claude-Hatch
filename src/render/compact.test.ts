@@ -17,6 +17,9 @@ import { cumulativeXpForLevel } from "../xp/engine.js";
 import {
   REFRESH_MS,
   LEVEL_UP_WINDOW_MS,
+  EAT_WINDOW_MS,
+  PLAY_WINDOW_MS,
+  PET_WINDOW_MS,
   pickCompactFrame,
   assertFrameDimensions,
   deriveMood,
@@ -45,7 +48,9 @@ function makePet(overrides: Partial<Pet> = {}): Pet {
     name: "Pixel",
     createdAt: now,
     hatchedAt: now,
-    lastFedAt: now,
+    // lastFedAt default null so pickScene doesn't return "eating" for tests
+    // that don't care about the eat-window. Tests that need a fed pet override.
+    lastFedAt: null,
     lastInteractionAt: now,
     xp: 500,
     level: 5,
@@ -75,6 +80,7 @@ function makePet(overrides: Partial<Pet> = {}): Pet {
     lastPlayedAt: null,
     lastHatchedAt: null,
     lastEvolvedAt: null,
+    lastPettedAt: null,
     ...overrides,
   };
 }
@@ -281,6 +287,8 @@ describe("deriveMood", () => {
     const pet = makePet({
       pauseIntervals: [{ pausedAt: new Date().toISOString(), resumedAt: null }],
       accumulatedNeglectSeconds: 0,
+      // Override the default null lastFedAt so the hungry branch doesn't preempt sleeping.
+      lastFedAt: new Date().toISOString(),
     });
     expect(deriveMood(pet, now)).toBe("sleeping");
   });
@@ -428,6 +436,104 @@ describe("pickScene", () => {
     const pet = makePet({ lastLevelUpAt: exactlyExpired });
     // elapsed = LEVEL_UP_WINDOW_MS → not < LEVEL_UP_WINDOW_MS → expired
     expect(pickScene(pet, now)).toBe("idle-baseline");
+  });
+
+  // Interaction reaction windows
+  it("returns 'eating' when lastFedAt is within EAT_WINDOW_MS", () => {
+    const recentFed = new Date(now - 1000).toISOString(); // 1s ago — well within 6s window
+    const pet = makePet({ lastFedAt: recentFed });
+    expect(pickScene(pet, now)).toBe("eating");
+  });
+
+  it("returns idle-* when lastFedAt is outside EAT_WINDOW_MS", () => {
+    const oldFed = new Date(now - (EAT_WINDOW_MS + 1000)).toISOString();
+    const pet = makePet({ lastFedAt: oldFed });
+    expect(pickScene(pet, now)).toBe("idle-baseline");
+  });
+
+  it("returns 'playing' when lastPlayedAt is within PLAY_WINDOW_MS", () => {
+    const recentPlay = new Date(now - 1000).toISOString();
+    const pet = makePet({ lastPlayedAt: recentPlay });
+    expect(pickScene(pet, now)).toBe("playing");
+  });
+
+  it("returns idle-* when lastPlayedAt is outside PLAY_WINDOW_MS", () => {
+    const oldPlay = new Date(now - (PLAY_WINDOW_MS + 1000)).toISOString();
+    const pet = makePet({ lastPlayedAt: oldPlay });
+    expect(pickScene(pet, now)).toBe("idle-baseline");
+  });
+
+  it("returns 'petted' when lastPettedAt is within PET_WINDOW_MS", () => {
+    const recentPet = new Date(now - 1000).toISOString();
+    const pet = makePet({ lastPettedAt: recentPet });
+    expect(pickScene(pet, now)).toBe("petted");
+  });
+
+  it("returns idle-* when lastPettedAt is outside PET_WINDOW_MS", () => {
+    const oldPet = new Date(now - (PET_WINDOW_MS + 1000)).toISOString();
+    const pet = makePet({ lastPettedAt: oldPet });
+    expect(pickScene(pet, now)).toBe("idle-baseline");
+  });
+
+  it("priority: level-up beats eating when both windows active", () => {
+    const recentLevelUp = new Date(now - 500).toISOString();
+    const recentFed = new Date(now - 500).toISOString();
+    const pet = makePet({ lastLevelUpAt: recentLevelUp, lastFedAt: recentFed });
+    expect(pickScene(pet, now)).toBe("level-up");
+  });
+
+  it("priority: sick beats eating when neglect active and not ascendant", () => {
+    const recentFed = new Date(now - 500).toISOString();
+    const pet = makePet({
+      lastFedAt: recentFed,
+      accumulatedNeglectSeconds: 86401, // over 1 day
+    });
+    expect(pickScene(pet, now)).toBe("sick");
+  });
+
+  it("priority: eating beats playing when both windows active", () => {
+    const recentFed = new Date(now - 500).toISOString();
+    const recentPlay = new Date(now - 500).toISOString();
+    const pet = makePet({ lastFedAt: recentFed, lastPlayedAt: recentPlay });
+    expect(pickScene(pet, now)).toBe("eating");
+  });
+
+  it("priority: playing beats petted when both windows active", () => {
+    const recentPlay = new Date(now - 500).toISOString();
+    const recentPet = new Date(now - 500).toISOString();
+    const pet = makePet({ lastPlayedAt: recentPlay, lastPettedAt: recentPet });
+    expect(pickScene(pet, now)).toBe("playing");
+  });
+
+  it("window math: EAT_WINDOW_MS=6000 guarantees >=4 ticks at 1Hz worst case", () => {
+    // Worst case: trigger fires at X+0.999s inside a 1Hz polling period.
+    // First visible tick is at X+1s (0.001s of window remaining after trigger).
+    // Window must be wide enough that ticks at X+1, X+2, X+3, X+4 are all visible.
+    // Required: window > 4s. EAT_WINDOW_MS=6000 >> 4000. ✓
+    expect(EAT_WINDOW_MS).toBeGreaterThan(4000);
+    // Verify: a trigger at worst-case offset still shows 4 ticks
+    const worstCaseOffset = 999; // ms into a 1Hz period
+    const ticksVisible = Math.floor((EAT_WINDOW_MS - worstCaseOffset) / 1000);
+    expect(ticksVisible).toBeGreaterThanOrEqual(4);
+  });
+
+  it("window math: PET_WINDOW_MS=5000 guarantees >=4 ticks at 1Hz worst case", () => {
+    expect(PET_WINDOW_MS).toBeGreaterThan(4000);
+    const worstCaseOffset = 999;
+    const ticksVisible = Math.floor((PET_WINDOW_MS - worstCaseOffset) / 1000);
+    expect(ticksVisible).toBeGreaterThanOrEqual(4);
+  });
+
+  it("window constants: EAT_WINDOW_MS is 6000", () => {
+    expect(EAT_WINDOW_MS).toBe(6000);
+  });
+
+  it("window constants: PLAY_WINDOW_MS is 6000", () => {
+    expect(PLAY_WINDOW_MS).toBe(6000);
+  });
+
+  it("window constants: PET_WINDOW_MS is 5000", () => {
+    expect(PET_WINDOW_MS).toBe(5000);
   });
 });
 
