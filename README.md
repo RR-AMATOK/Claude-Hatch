@@ -235,10 +235,10 @@ git clone https://github.com/RR-AMATOK/Claude-Hatch.git glyphling
 cd glyphling
 npm install
 npm run dev    # launches the Ink TUI against ./.dev-state/dev
-npm test       # 740 tests
+npm test       # 1217 tests
 ```
 
-Contributions welcome once we tag `v0.1.0`. Until then, the shape of the API is still moving. Issues and design feedback are open now.
+`v1.0.0` is shipped — `npm install -g glyphling` pulls the stable build. Contributions are welcome: open an issue first for anything substantial, and please keep PRs focused (one purpose per branch). Existing conventions live in `CLAUDE.md` and the agent-team docs.
 
 ---
 
