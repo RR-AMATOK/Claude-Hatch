@@ -90,8 +90,9 @@ function makePet(overrides: Partial<Pet> = {}): Pet {
 // ---------------------------------------------------------------------------
 
 describe("species-frames coverage", () => {
-  it("exposes the idle scene keys plus playing and petted", () => {
+  it("exposes the idle scene keys plus eating, playing, and petted", () => {
     expect([...SPECIES_FRAME_SCENE_KEYS].sort()).toEqual([
+      "eating",
       "idle-baseline",
       "idle-energetic",
       "idle-stoic",
@@ -137,12 +138,18 @@ describe("species-frames coverage", () => {
     expect(getSpeciesCompactFrames("bloom", "hatchling", "playing")).toBeNull();
   });
 
-  it("shard juvenile/adult return null for playing (partial coverage by design)", () => {
+  it("shard adult has eating/playing/petted; juvenile still uses fallback", () => {
+    // Shard adult is fully covered for the reactive scenes (Bramble's stage).
+    expect(getSpeciesCompactFrames("shard", "adult", "eating")).not.toBeNull();
+    expect(getSpeciesCompactFrames("shard", "adult", "playing")).not.toBeNull();
+    expect(getSpeciesCompactFrames("shard", "adult", "petted")).not.toBeNull();
+    // Juvenile remains uncovered — falls back to SCENE_FRAMES.
     expect(getSpeciesCompactFrames("shard", "juvenile", "playing")).toBeNull();
-    expect(getSpeciesCompactFrames("shard", "adult", "playing")).toBeNull();
+    expect(getSpeciesCompactFrames("shard", "juvenile", "eating")).toBeNull();
   });
 
-  it("returns null for unknown scene keys (renderer falls back to legacy path)", () => {
+  it("returns null for unknown scene keys (renderer falls back to SCENE_FRAMES)", () => {
+    // Non-shard species return null for eating — falls back to SCENE_FRAMES.
     expect(getSpeciesCompactFrames("circuit", "adult", "eating")).toBeNull();
     expect(getSpeciesCompactFrames("circuit", "adult", "sick")).toBeNull();
     expect(getSpeciesCompactFrames("circuit", "adult", "sleeping")).toBeNull();
