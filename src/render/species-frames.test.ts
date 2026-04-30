@@ -310,14 +310,14 @@ describe("assembleCompactOutput integration", () => {
     expect(tick2).toContain("[-.-]");
   });
 
-  it("falls back to legacy eye-blink path for sick scene (not in species-frames)", () => {
-    // Sick is not in the species-frames table — the renderer should fall
-    // through to the SILHOUETTES table + applyEyeBlink path, which preserves
-    // the existing visual contract for un-authored scenes.
+  it("renders generic SICK_FRAMES for sick scene when no species art exists", () => {
+    // Sick is not in the species-frames table. Per the reaction-scenes
+    // fallback rule, the renderer uses generic SCENE_FRAMES content
+    // (which visibly differs from idle) instead of silhouette + eye-blink.
     const pet = makePet({ eggType: "circuit", xp: 100_000 });
     const out = assembleCompactOutput(pet, "sick", 0, "none", false, 1, 0);
-    // Sick fallback uses the static circuit-adult silhouette top row.
-    expect(out).toContain("/[o-o]\\");
+    // Tick 0 of SICK_FRAMES has " /[x-o]\\" on the top art row.
+    expect(out).toContain("/[x-o]\\");
   });
 });
 
