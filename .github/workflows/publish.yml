@@ -31,6 +31,19 @@ on:
       - 'v[0-9]+.[0-9]+.[0-9]+'              # stable: @latest
       - 'v[0-9]+.[0-9]+.[0-9]+-rc.[0-9]+'    # release candidate: @next
       - 'v[0-9]+.[0-9]+.[0-9]+-beta.[0-9]+'  # beta: @beta
+  # Permanent escape hatch: manually trigger a publish for any tag that
+  # already exists in the repo (e.g. to retry a failed publish or to
+  # publish a tag that was created outside the normal bump-driven flow).
+  # The gate's tag-must-match-package.json check is SKIPPED for dispatches
+  # (the caller is explicitly choosing which tag to publish).
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: >
+          Existing tag to publish (e.g. "v1.0.0"). The tag must already
+          exist in the repo — this trigger does not create tags.
+        required: true
+        type: string
 
 # Default to minimal read. id-token: write is scoped to the publish job
 # only (the gate job has no business minting an OIDC token).
@@ -49,7 +62,23 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      # For workflow_dispatch, check out the specific tag the caller named.
+      # For tag-push, the ref is already correct — no special handling needed.
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', github.event.inputs.tag) || '' }}
+
+      - name: Verify dispatch tag exists in repo
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          set -euo pipefail
+          input_tag="${{ github.event.inputs.tag }}"
+          if ! git ls-remote --tags origin "refs/tags/$input_tag" | grep -q "$input_tag"; then
+            echo "::error::tag '$input_tag' does not exist in the repo — create it first (e.g. via release.yml) before dispatching publish"
+            exit 1
+          fi
+          echo "tag '$input_tag' verified present in repo"
 
       - name: Setup Node 22.x
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
@@ -64,6 +93,10 @@ jobs:
       - run: npm run build
 
       - name: Verify tag exactly matches package.json version
+        # Skipped for workflow_dispatch: the caller is explicitly choosing which
+        # tag to publish (e.g. to retry a failed publish). The tag was already
+        # validated at creation time by release.yml.
+        if: github.event_name != 'workflow_dispatch'
         run: |
           set -euo pipefail
           pkg_version=$(node -p "require('./package.json').version")
@@ -94,7 +127,11 @@ jobs:
       # id-token: write scoped to publish only — required for npm OIDC.
       id-token: write
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      # For workflow_dispatch, check out the tag. For tag-push the ref is correct.
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', github.event.inputs.tag) || '' }}
 
       - name: Setup Node 22.x
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
@@ -111,15 +148,21 @@ jobs:
         id: dist
         run: |
           set -euo pipefail
-          if [[ "$GITHUB_REF" == *-beta.* ]]; then
+          # For workflow_dispatch, derive the ref from the input tag.
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            effective_ref="refs/tags/${{ github.event.inputs.tag }}"
+          else
+            effective_ref="$GITHUB_REF"
+          fi
+          if [[ "$effective_ref" == *-beta.* ]]; then
             tag=beta
-          elif [[ "$GITHUB_REF" == *-rc.* ]]; then
+          elif [[ "$effective_ref" == *-rc.* ]]; then
             tag=next
           else
             tag=latest
           fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "publishing $GITHUB_REF to npm dist-tag: $tag"
+          echo "publishing $effective_ref to npm dist-tag: $tag"
 
       - name: Publish with provenance
         # OIDC auth via npm trusted publisher (workflow=publish.yml, env=publish).

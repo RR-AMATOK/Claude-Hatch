@@ -31,6 +31,9 @@
 #     "smoke-pack (ubuntu-latest) / smoke-pack (ubuntu-latest)"
 #     "smoke-pack (macos-latest) / smoke-pack (macos-latest)"
 #
+#   From .github/workflows/changelog-check.yml:
+#     "changelog-check / verify"
+#
 # WARNING: Renaming any of those job `name:` fields will break
 # branch protection without this script being updated and re-run.
 # ============================================================
@@ -62,7 +65,8 @@ gh api --method PUT "repos/$REPO/branches/main/protection" \
       "audit-ci (high)",
       "CodeQL",
       "smoke-pack (ubuntu-latest) / smoke-pack (ubuntu-latest)",
-      "smoke-pack (macos-latest) / smoke-pack (macos-latest)"
+      "smoke-pack (macos-latest) / smoke-pack (macos-latest)",
+      "changelog-check / verify"
     ]
   },
   "enforce_admins": true,
@@ -103,7 +107,8 @@ gh api --method PUT "repos/$REPO/branches/beta/protection" \
       "test (node 22.x · macos-latest)",
       "pack dry-run (tarball hygiene)",
       "audit-ci (high)",
-      "smoke-pack (ubuntu-latest) / smoke-pack (ubuntu-latest)"
+      "smoke-pack (ubuntu-latest) / smoke-pack (ubuntu-latest)",
+      "changelog-check / verify"
     ]
   },
   "enforce_admins": true,
