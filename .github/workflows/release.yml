@@ -46,6 +46,12 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: write
+      # actions: write — required so this workflow can call
+      # `gh workflow run publish.yml` after creating the Release.
+      # GITHUB_TOKEN tag-push events do NOT trigger downstream workflows
+      # (a documented GitHub limitation), so we invoke publish.yml
+      # explicitly instead of relying on the tag-push trigger.
+      actions: write
     steps:
       - name: Checkout (with parent for diff)
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -150,6 +156,25 @@ jobs:
           make_latest: ${{ !contains(steps.detect.outputs.version, '-') }}
 
       # --------------------------------------------------------
+      # Step: Trigger npm publish for the new tag
+      # GitHub explicitly suppresses workflow runs for events triggered
+      # by GITHUB_TOKEN (with the exception of workflow_dispatch and
+      # repository_dispatch). softprops/action-gh-release uses
+      # GITHUB_TOKEN to push the tag, so publish.yml's `on: push: tags`
+      # trigger never fires. We invoke it explicitly via gh CLI here.
+      # See: https://docs.github.com/en/actions/security-guides/automatic-token-authentication#using-the-github_token-in-a-workflow
+      # --------------------------------------------------------
+      - name: Trigger npm publish for the new tag
+        if: steps.detect.outputs.proceed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="v${{ steps.detect.outputs.version }}"
+          echo "dispatching publish.yml with tag=$tag"
+          gh workflow run publish.yml -f tag="$tag"
+
+      # --------------------------------------------------------
       # Step: Job summary
       # --------------------------------------------------------
       - name: Write step summary
@@ -167,7 +192,7 @@ jobs:
             echo "| Trigger path | ${PATH_LABEL} |"
             echo "| Release page | https://github.com/${REPO}/releases/tag/v${VERSION} |"
             echo ""
-            echo "Tag push will trigger \`publish.yml\` → npm publish."
+            echo "Dispatched \`publish.yml\` with tag \`v${VERSION}\` — npm publish in progress."
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: No-op summary (no version change)
