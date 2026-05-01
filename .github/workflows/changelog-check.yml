@@ -1,0 +1,102 @@
+# ============================================================
+# Changelog check — PR gate
+# ============================================================
+# Trigger: pull_request targeting main or beta, when package.json
+#          is in the changed file set.
+#
+# Fails if package.json#version changed in the PR diff but CHANGELOG.md
+# does not have a matching "## [X.Y.Z]" section with non-empty content.
+#
+# NOT required on dev — that branch is a staging area; version bumps
+# there do not need a CHANGELOG entry until the PR targets main/beta.
+# ============================================================
+
+name: Changelog check
+
+on:
+  pull_request:
+    branches:
+      - main
+      - beta
+    paths:
+      - package.json
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: changelog-check / verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          # Full history needed to diff against base ref.
+          fetch-depth: 0
+
+      # --------------------------------------------------------
+      # Step: Detect version change in the PR diff
+      # --------------------------------------------------------
+      - name: Detect version change in PR diff
+        id: version
+        run: |
+          set -euo pipefail
+
+          base_sha="${{ github.event.pull_request.base.sha }}"
+          old_v=$(git show "$base_sha:package.json" \
+            | node -p "JSON.parse(require('fs').readFileSync(0,'utf8')).version")
+          new_v=$(node -p "require('./package.json').version")
+
+          if [ "$old_v" = "$new_v" ]; then
+            echo "no version change ($old_v unchanged) — skipping changelog check"
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+            echo "version="      >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "version: $old_v → $new_v"
+          echo "proceed=true"   >> "$GITHUB_OUTPUT"
+          echo "version=$new_v" >> "$GITHUB_OUTPUT"
+
+      # --------------------------------------------------------
+      # Step: Verify CHANGELOG has a matching section header
+      # --------------------------------------------------------
+      - name: Verify CHANGELOG has entry for new version
+        if: steps.version.outputs.proceed == 'true'
+        run: |
+          set -euo pipefail
+          new_v="${{ steps.version.outputs.version }}"
+
+          if ! grep -q "^## \[$new_v\]" CHANGELOG.md; then
+            echo "::error file=CHANGELOG.md::missing changelog entry — add a '## [$new_v] — YYYY-MM-DD' section to CHANGELOG.md before merging"
+            exit 1
+          fi
+
+          echo "CHANGELOG.md has a section header for [$new_v]"
+
+      # --------------------------------------------------------
+      # Step: Verify the CHANGELOG entry is non-empty
+      # --------------------------------------------------------
+      - name: Verify CHANGELOG entry is non-empty
+        if: steps.version.outputs.proceed == 'true'
+        run: |
+          set -euo pipefail
+          new_v="${{ steps.version.outputs.version }}"
+
+          body=$(awk -v v="$new_v" '
+            $0 ~ "^## \\["v"\\]" { in_block=1; next }
+            in_block && /^## \[/ { exit }
+            in_block { print }
+          ' CHANGELOG.md)
+
+          if [ -z "$(echo "$body" | tr -d '[:space:]\n-')" ]; then
+            echo "::error file=CHANGELOG.md::CHANGELOG entry for [$new_v] is empty — add release notes under the '## [$new_v]' section"
+            exit 1
+          fi
+
+          line_count=$(echo "$body" | grep -c '[^[:space:]]' || true)
+          echo "CHANGELOG.md entry for [$new_v] is non-empty ($line_count lines)"
