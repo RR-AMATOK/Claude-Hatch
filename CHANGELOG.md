@@ -4,24 +4,50 @@ All notable user-facing changes to glyphling are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.0.1-beta.0] — 2026-05-04
 
-First public preview. Everything listed below is slated for `v0.1.0`.
+First beta in the post-1.0.0 cycle. No user-facing changes from `1.0.0` — this version exists to validate the bump-driven release flow on the `beta` branch end-to-end: `release.yml` detects bump → tag + GitHub Release → `publish.yml` dispatched via `gh` CLI → npm publishes via OIDC trusted-publisher to `@beta`.
 
-### Added
+The `beta` branch is also catching up to `main`'s history in this commit; the previous `0.1.1-beta.X` lineage is superseded.
 
-- **Hatch a pet from one of four eggs** — `circuit`, `rune`, `shard`, or `bloom`. Each has its own silhouette, accent colour, and idling effects.
-- **XP from real coding signals** — commits, test runs, tokens flowing through Claude Code, files you edit, and a daily check-in bonus. Sensible daily caps so a single runaway script can't hijack your progression.
-- **Claude Code statusline integration** — `glyphling statusline` is a one-shot renderer under 30 ms per tick. Your pet rides along beneath the prompt, updating every second.
-- **Expanded terminal UI** — a full Ink TUI with 22 scenes covering idling, eating, sleeping, playing, levelling up, happy/sad moods, hatching, evolving, and more. Run with `glyphling`.
-- **Personality engine** — an eight-trait vector (`Stoic`, `Friendly`, `Pragmatic`, `Energetic`, `Gruff`, `Philosophical`, `Paranoid`, `Curious`) that drifts with the languages you use, the hours you keep, and how you treat it. Your pet picks a different idle animation based on who it's becoming.
-- **Multi-pet adoption** — once your primary pet has grown up enough, you can adopt additional companions. Up to four can share your shell at once.
-- **Lifecycle with teeth** — hunger, sickness, and eventual death are real states on a hybrid accumulated/wall-clock timer that's robust to system sleep, clock skew, and pausing. Pause any time; the clock stops cleanly.
-- **GIF export** — `glyphling export 1` produces a short, watermarked snapshot of your pet, perfect for sharing. Higher tiers (longer, sharper, cleaner) unlock as your pet grows.
-- **REPL commands** — `feed`, `play`, `rename`, `adopt`, `pause`, `resume`, `export`, and more.
-- **Integrity checks** — hash-chained events and transcript cross-verification catch casual state tampering without pretending to be a leaderboard backend. Your pet, your machine; don't cheat yourself.
-- **Accessibility** — reduced-motion variants for level-up and other animations via `GLYPHLING_REDUCED_MOTION=1`. Emoji mood glyphs opt-in via `GLYPHLING_RICH_GLYPHS=1`. 256-colour safe by default; truecolour available.
-- **Zero telemetry.** No account, no network, no analytics. State lives in `~/.claude/glyphling/` as plain JSON.
+### Validates
+- `release.yml` push trigger fires on `beta` for the first time.
+- Explicit `gh workflow run publish.yml` dispatch from `release.yml` (PR #54) bypasses the `GITHUB_TOKEN` event-suppression rule.
+- OIDC trusted-publisher routing for `publish.yml` + `publish` environment after the npm-side re-registration with 2FA mode "Require 2FA and disallow tokens."
+- `changelog-check.yml` PR gate on the `beta` branch.
+
+---
+
+## [1.0.0] — 2026-04-30
+
+First stable release. The pet you live with — fed by your real coding work, reacting to your slash commands, persisting across sessions.
+
+### Added since 0.1.0
+
+- **Statusline reactions to slash commands.** `/glyph-feed`, `/glyph-play`, and `/glyph-pet` now produce visible scene transitions in the Claude Code statusline (eating / playing / petted), each guaranteed to play long enough to register at the 1 Hz refresh.
+- **`glyphling install`** — copies the bundled `/glyph-*` slash commands into `~/.claude/commands/` so they appear in Claude Code's `/` autocomplete. Idempotent; `--uninstall` removes only what it installed.
+- **One-shot scene dispatch from real events.** Feeding, playing, levelling up, hatching, and evolving each emit a windowed scene that survives TUI restarts (frames derived from elapsed wall-clock).
+- **`glyphling --version` / `-V`** — fast-path that exits before booting Ink.
+- **Per-species statusline frames** for shard at every life stage, plus the three idle variants for all four species across hatchling/juvenile/adult.
+- **HUD validation banner** — when `state.json` fails schema validation, the TUI surfaces a dim-red banner instead of silently rendering stale state.
+- **Conventional commit slash command pack** — `/glyph-doctor`, `/glyph-status`, `/glyph-pets`, `/glyph-pause`, `/glyph-resume`, `/glyph-name`, `/glyph-hatch` ship alongside feed/play/pet.
+
+### Changed
+
+- **Golden-ratio XP curve.** The level cap is **1618** — the Golden Level (⌊φ × 1000⌋). The XP curve is `xpToNext(L) = floor(2 · L^φ)` — the exponent is φ itself. Daily caps removed; raw XP keeps accumulating past the cap as a vanity counter.
+- **Token denominator** — 1 XP per 1000 tokens (was 1 per 500).
+- **Single-flight token collector** — at most one `appendEvent` in flight per collector at a time; concurrent emissions fold into a trailing batch. Capped exponential backoff on lock contention.
+- **Statusline reader** is hardened against torn reads with a small-jitter retry policy.
+
+### Fixed
+
+- **Daemon-offline chain healing** (DEC-022). Previously, if `glyphling watch` was offline for more than 24 h (laptop sleep, host restart, a crash), the chain entered a permanent loop where every fresh event was clamped 60 s ahead of the stale `lastEventAt` — slower than wall-clock — and reactions silently broke. Now: the first emit after a >24 h gap appends a `daemon.resync` audit event and the chain re-anchors to real-now in one step.
+- **XP-bar sawtooth** — the colourised bar now uses the cumulative DEC-020 formula consistently; the bar no longer reaches full and resets several times per level.
+- **`/glyph-pet` event semantics** — uses its own `pet.petted` event type instead of misusing `pet.fed`.
+
+### Infrastructure
+
+- Multi-branch CI/CD topology (`feature → dev → beta → main`), tag-driven publishing, OIDC trusted-publisher routing, cross-platform smoke-pack matrix on Node 20/22 × Ubuntu/macOS, audit-ci, and CodeQL.
 
 ### Configuration
 
@@ -37,19 +63,31 @@ First public preview. Everything listed below is slated for `v0.1.0`.
 - [`vhs`](https://github.com/charmbracelet/vhs) for GIF export — `brew install vhs` (optional; only needed when you run `glyphling export`)
 - macOS and Linux supported. Windows untested — reports welcome.
 
-### Not yet documented
-
-There are a few things deliberately left out of this log. You'll find them yourself.
-
 ### Support
 
 If glyphling brightens your terminal, you can [buy me a coffee](https://buymeacoffee.com/888t5ggdv6w). Entirely optional — the project is free and local-only, forever.
 
 ---
 
+## [0.1.0] — 2026-04-25
+
+First public preview. Established the core loop: hatch from one of four eggs (`circuit` / `rune` / `shard` / `bloom`), earn XP from real coding signals (commits, tests, tokens, file edits, daily check-ins), live in the Claude Code statusline as a one-shot ≤30 ms renderer, and run alongside the full Ink TUI with 22 scenes.
+
+### Added
+
+- Egg hatching, XP engine, multi-pet adoption (up to four pets), eight-trait personality engine.
+- Statusline + expanded TUI render paths.
+- Hybrid lifecycle clock — accumulated-neglect days plus wall-clock days, robust to sleep / pause / clock skew.
+- GIF export via `vhs`, tier-gated by level.
+- Hash-chained events with transcript cross-verification.
+- Reduced-motion variant, opt-in emoji glyphs, 256-colour by default with truecolour available.
+- Zero telemetry. State in `~/.claude/glyphling/` as plain JSON.
+
+---
+
 <!--
   Release format for future versions:
 
-  ## [0.1.0] — YYYY-MM-DD
+  ## [X.Y.Z] — YYYY-MM-DD
   ### Added / Changed / Deprecated / Removed / Fixed / Security
 -->

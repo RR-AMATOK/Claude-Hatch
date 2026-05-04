@@ -23,6 +23,7 @@ export type EventType =
   | "daily.checkin"
   | "pet.fed"
   | "pet.played"
+  | "pet.petted"
   | "pet.paused"
   | "pet.resumed"
   | "level.up"

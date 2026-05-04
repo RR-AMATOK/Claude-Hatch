@@ -1,6 +1,6 @@
 {
   "name": "glyphling",
-  "version": "0.1.1-beta.6",
+  "version": "1.0.1-beta.0",
   "description": "A Node + TypeScript + Ink terminal pet that accompanies Claude Code sessions.",
   "license": "MIT",
   "type": "module",
@@ -56,5 +56,13 @@
     "url": "https://github.com/RR-AMATOK/Claude-Hatch/issues"
   },
   "homepage": "https://github.com/RR-AMATOK/Claude-Hatch#readme",
-  "keywords": ["claude-code", "statusline", "tamagotchi", "cli", "tui", "ink", "pet"]
+  "keywords": [
+    "claude-code",
+    "statusline",
+    "tamagotchi",
+    "cli",
+    "tui",
+    "ink",
+    "pet"
+  ]
 }

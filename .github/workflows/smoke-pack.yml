@@ -63,11 +63,15 @@ jobs:
       - name: Install packed tarball globally
         run: npm install -g ./glyphling-*.tgz
 
-      # NOTE: `glyphling --version` smoke step is deferred until the
-      # `chore/version-flag-and-handler-cleanup` PR merges and adds a
-      # `--version` / `-V` fast-path that exits before booting Ink.
-      # On current main, --version falls through to the TUI which crashes
-      # in non-TTY contexts (raw mode unsupported). Restore the step then.
+      - name: Verify --version exits 0 with semver string
+        # Defends against regression of the original Ink-TUI fall-through
+        # (raw-mode crash on non-TTY runners). The fast-path was added in
+        # PR #32 (TODO-040) and reads from package.json via readPackageVersion().
+        run: |
+          set -euo pipefail
+          OUTPUT=$(glyphling --version)
+          echo "Got: $OUTPUT"
+          echo "$OUTPUT" | grep -E '^glyphling [0-9]+\.[0-9]+\.[0-9]+'
 
       - name: Verify statusline exits 0 with non-empty stdout
         run: |

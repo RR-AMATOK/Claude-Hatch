@@ -78,6 +78,7 @@ function makePet(level: number): Pet {
     lastPlayedAt: null,
     lastHatchedAt: null,
     lastEvolvedAt: null,
+    lastPettedAt: null,
   };
 }
 

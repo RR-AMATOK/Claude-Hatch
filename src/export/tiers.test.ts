@@ -66,6 +66,7 @@ function makePet(xp: number): Pet {
     lastPlayedAt: null,
     lastHatchedAt: null,
     lastEvolvedAt: null,
+    lastPettedAt: null,
   };
 }
 
