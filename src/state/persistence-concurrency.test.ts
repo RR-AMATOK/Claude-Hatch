@@ -137,7 +137,7 @@ for (let i = 0; i < eventCount; i++) {
       // Zero chain breaks
       expect(result.chainBroken).toBe(false);
 
-      // Count events by type — exclude signal.rejected (clock-clamp side effects)
+      // Count events by type — exclude signal.rejected (integrity side effects)
       const payloadEvents = result.events.filter(
         (e) => e.type !== "signal.rejected"
       );

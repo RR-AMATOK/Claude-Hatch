@@ -113,6 +113,7 @@ function makePet(level: number, overrides: Partial<Pet> = {}): Pet {
     lastPlayedAt: null,
     lastHatchedAt: null,
     lastEvolvedAt: null,
+    lastPettedAt: null,
     ...overrides,
   };
 }
@@ -515,6 +516,31 @@ describe("petCommand (TODO-022)", () => {
 
     await petCommand([], CTX);
     expect(mockAppendEvent).toHaveBeenCalledOnce();
+  });
+
+  it("emits pet.petted (not pet.fed) event type", async () => {
+    const pet = makePet(1);
+    mockReadState.mockResolvedValue(makeState(pet));
+
+    await petCommand([], CTX);
+    const [_config, event] = mockAppendEvent.mock.calls[0]!;
+    expect(event.type).toBe("pet.petted");
+  });
+
+  it("fold stamps lastPettedAt on the pet", async () => {
+    const pet = makePet(1);
+    mockReadState.mockResolvedValue(makeState(pet));
+
+    await petCommand([], CTX);
+    // The fold function is passed as the third argument to appendEvent.
+    // Extract it and invoke it directly to verify lastPettedAt is written.
+    const [_config, event, fold] = mockAppendEvent.mock.calls[0]!;
+    expect(fold).toBeDefined();
+    const state = makeState(pet);
+    const foldedState = fold!(state, event);
+    const updatedPet = foldedState.pets.find((p) => p.id === pet.id);
+    expect(updatedPet?.lastPettedAt).toBeDefined();
+    expect(updatedPet?.lastPettedAt).not.toBeNull();
   });
 });
 

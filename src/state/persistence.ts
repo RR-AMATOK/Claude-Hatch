@@ -29,6 +29,7 @@ import {
   type StateFileV1,
   type GlyphlingEvent,
   type SignalRejectedPayload,
+  type DaemonResyncPayload,
 } from "./schema.js";
 import { withLock, sweepStale } from "./lockfile.js";
 import { sha256, canonicalJson } from "../util/hash.js";
@@ -64,16 +65,12 @@ const WATCH_DEBOUNCE_MS = 50;
 const READ_RETRY_JITTER_MS = 20;
 
 /**
- * DEC-018 Mechanism 4: forward-jump threshold for monotonic clock guard.
- * Events timestamped more than 24 h after the previous event trigger a clamp.
+ * DEC-022: forward-jump threshold for monotonic clock guard.
+ * Events timestamped more than 24 h after the previous event trigger a
+ * daemon.resync event; the incoming event's timestamp is accepted as-is
+ * (no clamping). The backward-clamp path is unaffected.
  */
 const CLOCK_FORWARD_JUMP_MS = 24 * 60 * 60 * 1000;
-
-/**
- * DEC-018 Mechanism 4: when a forward jump is clamped, the new timestamp is
- * set to lastEventAt + this offset (60 s) to remain monotonic but not freeze.
- */
-const CLOCK_FORWARD_CLAMP_OFFSET_MS = 60_000;
 
 // SEC-003: File size caps to prevent unbounded reads / OOM.
 const MAX_STATE_BYTES = 5 * 1024 * 1024;        // 5 MB
@@ -262,9 +259,8 @@ async function writeStateUnderLock(
  *   5. Compute new eventsHead = sha256(canonicalJson(event)).
  *   6. Update state.globals.eventsHead + lastEventAt, fold event, persist.
  *
- * Returns: the event as actually persisted (may have a clamped timestamp and
- * prevHash set), plus any side-effect signal.rejected events emitted during
- * the integrity checks.
+ * Returns: the event as actually persisted (prevHash set), plus any side-effect
+ * events (signal.rejected or daemon.resync) emitted during the integrity checks.
  *
  * `fold` is a caller-supplied function that applies the event to the current
  * state and returns the mutated state. If `fold` is omitted, only the event
@@ -292,7 +288,10 @@ export async function appendEvent(
   // → append to JSONL → write updated state → release. All under one lock.
   // -------------------------------------------------------------------------
   let appended!: GlyphlingEvent;
-  const rejections: GlyphlingEvent[] = [];
+  // sideEffects holds daemon.resync and signal.rejected events that are
+  // prepended to the log before the main event. Returned as `rejections`
+  // for backwards-compatible callers.
+  const sideEffects: GlyphlingEvent[] = [];
 
   await withLock(stateFile, async () => {
     // Read current state for integrity fields (inside the lock)
@@ -301,7 +300,7 @@ export async function appendEvent(
     const lastEventAt = current?.globals.lastEventAt ?? 0;
 
     // -----------------------------------------------------------------------
-    // DEC-018 Mechanism 4: monotonic clock guards
+    // DEC-022 / DEC-018 Mechanism 4: monotonic clock guards
     // -----------------------------------------------------------------------
     const eventTs = new Date(event.ts).getTime();
     let clampedTs = eventTs;
@@ -309,9 +308,9 @@ export async function appendEvent(
 
     if (lastEventAt > 0) {
       if (eventTs < lastEventAt) {
-        // Backward jump — clamp to lastEventAt
+        // Backward jump — clamp to lastEventAt; emit signal.rejected
         clampedTs = lastEventAt;
-        rejections.push(
+        sideEffects.push(
           makeRejectionEvent(
             { reason: "clock.jump.backward", origEventId: event.id },
             event.petId,
@@ -319,36 +318,45 @@ export async function appendEvent(
           )
         );
       } else if (eventTs > lastEventAt + CLOCK_FORWARD_JUMP_MS) {
-        // Forward jump > 24 h — clamp to lastEventAt + 60 s
-        clampedTs = lastEventAt + CLOCK_FORWARD_CLAMP_OFFSET_MS;
-        rejections.push(
-          makeRejectionEvent(
-            { reason: "clock.jump.forward", origEventId: event.id },
-            event.petId,
+        // Forward jump > 24 h — DEC-022: emit daemon.resync; accept ts as-is
+        sideEffects.push(
+          makeDaemonResyncEvent(
+            {
+              from: new Date(lastEventAt).toISOString(),
+              to: tsNow,
+              gapMs: eventTs - lastEventAt,
+              reason: "forward-gap-exceeded-threshold",
+            },
             tsNow
           )
         );
+        // clampedTs stays = eventTs (no clamping)
       }
+    }
+
+    // -----------------------------------------------------------------------
+    // Append side-effect events first (they precede the main event in the log).
+    // Each side-effect is chained off the previous hash so the full sequence
+    // forms a valid chain: currentHead → sideEffect[0] → ... → mainEvent.
+    // -----------------------------------------------------------------------
+    let chainHead = currentHead;
+    for (const sideEffect of sideEffects) {
+      const seWithHash: GlyphlingEvent = {
+        ...sideEffect,
+        prevHash: chainHead,
+      };
+      const seLine = JSON.stringify(seWithHash) + "\n";
+      // SEC-009: appendFile with mode 0o600
+      await fs.promises.appendFile(eventsLog, seLine, { encoding: "utf8", mode: 0o600 });
+      // Advance the running head so the next event in the sequence chains off this one
+      chainHead = sha256(canonicalJson(seWithHash));
     }
 
     const eventToAppend: GlyphlingEvent = {
       ...event,
       ts: clampedTs !== eventTs ? new Date(clampedTs).toISOString() : event.ts,
-      prevHash: currentHead,
+      prevHash: chainHead,
     };
-
-    // -----------------------------------------------------------------------
-    // Append rejection events first (they precede the main event in the log)
-    // -----------------------------------------------------------------------
-    for (const rejection of rejections) {
-      const rejWithHash: GlyphlingEvent = {
-        ...rejection,
-        prevHash: currentHead,
-      };
-      const rejLine = JSON.stringify(rejWithHash) + "\n";
-      // SEC-009: appendFile with mode 0o600
-      await fs.promises.appendFile(eventsLog, rejLine, { encoding: "utf8", mode: 0o600 });
-    }
 
     // -----------------------------------------------------------------------
     // Append the main event to events.jsonl (DEC-010)
@@ -402,7 +410,7 @@ export async function appendEvent(
     appended = eventToAppend;
   });
 
-  return { appended, rejections };
+  return { appended, rejections: sideEffects };
 }
 
 // ---------------------------------------------------------------------------
@@ -906,6 +914,33 @@ function makeRejectionEvent(
     petId,
     source: "persistence",
     payload,
+    prevHash: "",
+  };
+}
+
+/**
+ * Build a daemon.resync event (DEC-022).
+ *
+ * Emitted when the incoming event's timestamp is more than 24 h ahead of
+ * `globals.lastEventAt`. The resync event is prepended to the log before the
+ * main event and re-anchors the clock anchor so subsequent events are accepted
+ * at their real timestamps.
+ *
+ * @param payload  The resync payload (from/to/gapMs/reason).
+ * @param ts       ISO8601 timestamp for the event (equals the incoming event's ts).
+ */
+function makeDaemonResyncEvent(
+  payload: DaemonResyncPayload,
+  ts: string
+): GlyphlingEvent {
+  return {
+    id: ulid(),
+    type: "daemon.resync",
+    ts,
+    petId: null,
+    source: "daemon",
+    payload,
+    xpDelta: 0,
     prevHash: "",
   };
 }

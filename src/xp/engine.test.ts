@@ -76,6 +76,7 @@ function makePet(overrides: Partial<Pet> = {}): Pet {
     lastPlayedAt: null,
     lastHatchedAt: null,
     lastEvolvedAt: null,
+    lastPettedAt: null,
     ...overrides,
   };
 }
@@ -543,6 +544,50 @@ describe("applyEvent — lastLevelUpAt", () => {
     expect(result.pet.xp).toBe(1_900_001);
     expect(result.pet.level).toBe(277);
     expect(result.pet.lastLevelUpAt).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// applyEvent — pet.petted timestamp
+// ---------------------------------------------------------------------------
+
+describe("applyEvent — pet.petted", () => {
+  it("sets lastPettedAt to event.ts on pet.petted with no xpDelta", () => {
+    const pet = makePet({ lastPettedAt: null });
+    // Build event without xpDelta directly — exactOptionalPropertyTypes
+    // disallows passing `xpDelta: undefined`; omission is the way.
+    const event = {
+      id: "01HTEST_petted_1",
+      type: "pet.petted" as const,
+      ts: new Date().toISOString(),
+      petId: "test-pet-001",
+      source: "test",
+      payload: {},
+    };
+    const result = applyEvent(event, pet);
+    expect(result.pet.lastPettedAt).toBe(event.ts);
+  });
+
+  it("sets lastPettedAt to event.ts on pet.petted even when xpDelta=0", () => {
+    const pet = makePet({ lastPettedAt: null });
+    const event = makeEvent({ type: "pet.petted", xpDelta: 0 });
+    const result = applyEvent(event, pet);
+    expect(result.pet.lastPettedAt).toBe(event.ts);
+  });
+
+  it("does not award XP when xpDelta is absent on pet.petted", () => {
+    const pet = makePet({ xp: 100, level: 1, lastPettedAt: null });
+    const event = {
+      id: "01HTEST_petted_2",
+      type: "pet.petted" as const,
+      ts: new Date().toISOString(),
+      petId: "test-pet-001",
+      source: "test",
+      payload: {},
+    };
+    const result = applyEvent(event, pet);
+    expect(result.pet.xp).toBe(100); // XP unchanged
+    expect(result.sideEffects).toHaveLength(0);
   });
 });
 

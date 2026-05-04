@@ -97,6 +97,19 @@ function formatEventLabel(event: GlyphlingEvent): string {
       return "GIF export failed";
     case "signal.rejected":
       return "signal rejected";
+    case "pet.hatched":
+      return "pet hatched!";
+    case "pet.evolved":
+      return "pet evolved!";
+    case "daemon.resync": {
+      const p = event.payload as Record<string, unknown> | null;
+      const gapMs = typeof p?.["gapMs"] === "number" ? p["gapMs"] : 0;
+      const gapHours = Math.floor(gapMs / (60 * 60 * 1000));
+      const gapMins = Math.floor((gapMs % (60 * 60 * 1000)) / (60 * 1000));
+      const gapLabel =
+        gapHours > 0 ? `${gapHours}h ${gapMins}m` : `${gapMins}m`;
+      return `daemon resynced after ${gapLabel} gap`;
+    }
     default:
       return event.type;
   }

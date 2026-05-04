@@ -223,6 +223,7 @@ export function adopt(
     lastPlayedAt: null,
     lastHatchedAt: null,
     lastEvolvedAt: null,
+    lastPettedAt: null,
   };
 
   const events: GlyphlingEvent[] = [];

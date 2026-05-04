@@ -79,6 +79,7 @@ function makeValidPet(overrides: Partial<Pet> = {}): Pet {
     lastPlayedAt: null,
     lastHatchedAt: null,
     lastEvolvedAt: null,
+    lastPettedAt: null,
     ...overrides,
   };
 }

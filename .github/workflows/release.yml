@@ -1,0 +1,201 @@
+# ============================================================
+# Release — create GitHub Release (and tag) on version bump
+# ============================================================
+# Trigger (auto): push to main/beta — detects package.json version diff
+#   between HEAD and HEAD^ and creates a matching tag + GitHub Release.
+# Trigger (escape hatch): workflow_dispatch with `version` input — for
+#   any release the auto-detector misses (e.g. one-off v1.0.0 ship).
+#
+# This workflow does NOT publish to npm. It creates the tag, which
+# causes publish.yml (tag-push trigger) to fire and handle npm.
+#
+# softprops/action-gh-release creates both the tag and the Release
+# atomically — no separate `git push origin tag` step needed.
+#
+# Concurrency: cancel-in-progress: false — a half-finished release is
+# worse than a queued one. Mirrors publish.yml's pattern.
+# ============================================================
+
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+      - beta
+  workflow_dispatch:
+    inputs:
+      version:
+        description: >
+          Version to release (must match package.json exactly, e.g. "1.0.0").
+          Use this escape hatch for any release the auto-detector misses.
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: create release
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      # actions: write — required so this workflow can call
+      # `gh workflow run publish.yml` after creating the Release.
+      # GITHUB_TOKEN tag-push events do NOT trigger downstream workflows
+      # (a documented GitHub limitation), so we invoke publish.yml
+      # explicitly instead of relying on the tag-push trigger.
+      actions: write
+    steps:
+      - name: Checkout (with parent for diff)
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 2
+
+      # --------------------------------------------------------
+      # Step: Detect version change (push) or validate input (dispatch)
+      # --------------------------------------------------------
+      - name: Detect version / validate dispatch input
+        id: detect
+        run: |
+          set -euo pipefail
+
+          pkg_version=$(node -p "require('./package.json').version")
+
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            input_version="${{ github.event.inputs.version }}"
+
+            # Sanity check: the input is a confirmation, not an override.
+            if [ "$input_version" != "$pkg_version" ]; then
+              echo "::error::workflow_dispatch version input '$input_version' does not match package.json version '$pkg_version' — update package.json before dispatching, or pass the correct version"
+              exit 1
+            fi
+
+            echo "dispatch path: version=$pkg_version (matches package.json)"
+            {
+              echo "version=$pkg_version"
+              echo "proceed=true"
+              echo "path=dispatch"
+            } >> "$GITHUB_OUTPUT"
+
+          else
+            # Push path: compare HEAD against HEAD^
+            # If HEAD^ doesn't exist (first commit), treat as a bump.
+            parent_version=$(git show HEAD^:package.json 2>/dev/null \
+              | node -p "JSON.parse(require('fs').readFileSync(0,'utf8')).version" \
+              || echo "0.0.0")
+
+            echo "version diff: $parent_version → $pkg_version"
+
+            if [ "$parent_version" = "$pkg_version" ]; then
+              echo "no version change — skipping release"
+              {
+                echo "proceed=false"
+                echo "version="
+                echo "path=push"
+              } >> "$GITHUB_OUTPUT"
+            else
+              echo "version bump detected: $parent_version → $pkg_version"
+              {
+                echo "version=$pkg_version"
+                echo "proceed=true"
+                echo "path=push"
+              } >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
+      # --------------------------------------------------------
+      # Step: Extract CHANGELOG body for this version
+      # --------------------------------------------------------
+      - name: Extract CHANGELOG body
+        id: notes
+        if: steps.detect.outputs.proceed == 'true'
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.detect.outputs.version }}"
+
+          body=$(awk -v v="$VERSION" '
+            $0 ~ "^## \\["v"\\]" { in_block=1; next }
+            in_block && /^## \[/ { exit }
+            in_block { print }
+          ' CHANGELOG.md)
+
+          if [ -z "$(echo "$body" | tr -d '[:space:]\n-')" ]; then
+            echo "::error file=CHANGELOG.md::no CHANGELOG entry for [$VERSION] — add a '## [$VERSION] — YYYY-MM-DD' section before bumping"
+            exit 1
+          fi
+
+          # Write multi-line output using heredoc-EOF pattern.
+          {
+            echo "body<<RELEASE_NOTES_EOF"
+            echo "$body"
+            echo "RELEASE_NOTES_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      # --------------------------------------------------------
+      # Step: Create GitHub Release (and tag) atomically
+      # Create the Release FIRST so publish.yml's npm publish never
+      # races ahead of an existing Release page on the tag.
+      # --------------------------------------------------------
+      - name: Create GitHub Release
+        if: steps.detect.outputs.proceed == 'true'
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
+        with:
+          tag_name: v${{ steps.detect.outputs.version }}
+          name: v${{ steps.detect.outputs.version }}
+          body: ${{ steps.notes.outputs.body }}
+          # A version string containing '-' is a pre-release (e.g. 1.0.0-beta.0).
+          prerelease: ${{ contains(steps.detect.outputs.version, '-') }}
+          # Only mark stable releases as latest.
+          make_latest: ${{ !contains(steps.detect.outputs.version, '-') }}
+
+      # --------------------------------------------------------
+      # Step: Trigger npm publish for the new tag
+      # GitHub explicitly suppresses workflow runs for events triggered
+      # by GITHUB_TOKEN (with the exception of workflow_dispatch and
+      # repository_dispatch). softprops/action-gh-release uses
+      # GITHUB_TOKEN to push the tag, so publish.yml's `on: push: tags`
+      # trigger never fires. We invoke it explicitly via gh CLI here.
+      # See: https://docs.github.com/en/actions/security-guides/automatic-token-authentication#using-the-github_token-in-a-workflow
+      # --------------------------------------------------------
+      - name: Trigger npm publish for the new tag
+        if: steps.detect.outputs.proceed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="v${{ steps.detect.outputs.version }}"
+          echo "dispatching publish.yml with tag=$tag"
+          gh workflow run publish.yml -f tag="$tag"
+
+      # --------------------------------------------------------
+      # Step: Job summary
+      # --------------------------------------------------------
+      - name: Write step summary
+        if: steps.detect.outputs.proceed == 'true'
+        run: |
+          VERSION="${{ steps.detect.outputs.version }}"
+          PATH_LABEL="${{ steps.detect.outputs.path }}"
+          REPO="${{ github.repository }}"
+          {
+            echo "## Release created: v${VERSION}"
+            echo ""
+            echo "| Field | Value |"
+            echo "|-------|-------|"
+            echo "| Version | \`v${VERSION}\` |"
+            echo "| Trigger path | ${PATH_LABEL} |"
+            echo "| Release page | https://github.com/${REPO}/releases/tag/v${VERSION} |"
+            echo ""
+            echo "Dispatched \`publish.yml\` with tag \`v${VERSION}\` — npm publish in progress."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: No-op summary (no version change)
+        if: steps.detect.outputs.proceed != 'true'
+        run: |
+          echo "## Release: skipped (no version bump)" >> "$GITHUB_STEP_SUMMARY"

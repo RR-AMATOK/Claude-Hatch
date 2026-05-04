@@ -63,6 +63,7 @@ function makeBasePet(id: string, xp: number, storedLevel: number): Pet {
     lastPlayedAt: null,
     lastHatchedAt: null,
     lastEvolvedAt: null,
+    lastPettedAt: null,
   };
 }
 

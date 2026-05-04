@@ -185,6 +185,13 @@ export const PetSchema = z
      * Optional with null default — backwards-compatible with existing state files.
      */
     lastEvolvedAt: ISO8601Schema.nullable().optional().default(null),
+    /**
+     * ISO timestamp of the most recent pet.petted (scritch) event.
+     * Set by the XP engine reducer when a pet.petted event is applied.
+     * Used by pickScene() to trigger the petted scene within the pet window.
+     * Optional with null default — backwards-compatible with existing state files.
+     */
+    lastPettedAt: ISO8601Schema.nullable().optional().default(null),
   })
   .refine(
     (p) => {
@@ -274,6 +281,7 @@ export const EventTypeSchema = z.enum([
   "daily.checkin",
   "pet.fed",
   "pet.played",
+  "pet.petted",
   "pet.paused",
   "pet.resumed",
   "level.up",
@@ -301,6 +309,8 @@ export const EventTypeSchema = z.enum([
   "signal.rejected",
   // Migration events (emitted by DEC-020 migration on first load)
   "pet.regrade",
+  // Daemon resync events (emitted by persistence — DEC-022)
+  "daemon.resync",
 ]);
 
 export type EventType = z.infer<typeof EventTypeSchema>;
@@ -341,11 +351,11 @@ export type GlyphlingEvent = z.infer<typeof GlyphlingEventSchema>;
 /**
  * Reason codes for signal.rejected events (DEC-018).
  * DEC-020: "cap.daily" removed (daily caps abolished).
+ * DEC-022: "clock.jump.forward" removed (forward gaps now trigger daemon.resync instead).
  */
 export const RejectionReasonSchema = z.enum([
   "chain.broken",
   "chain.broken.missing-prev",
-  "clock.jump.forward",
   "clock.jump.backward",
   "transcript.missing",
 ]);
@@ -381,6 +391,42 @@ export const SignalRejectedPayloadSchema = z.object({
 });
 
 export type SignalRejectedPayload = z.infer<typeof SignalRejectedPayloadSchema>;
+
+// ---------------------------------------------------------------------------
+// daemon.resync payload (DEC-022)
+// ---------------------------------------------------------------------------
+
+/**
+ * Payload for `daemon.resync` events (DEC-022).
+ *
+ * Emitted when a >24h forward gap is detected between the incoming event's
+ * timestamp and `globals.lastEventAt`. Replaces the old DEC-018 Mechanism 4
+ * forward-clamp behaviour: instead of clamping the event's timestamp and
+ * emitting `signal.rejected { reason: "clock.jump.forward" }`, the persistence
+ * layer now re-anchors `lastEventAt` to the incoming timestamp and records
+ * this resync in the audit trail.
+ */
+export const DaemonResyncPayloadSchema = z.object({
+  /** Previous lastEventAt (ISO 8601). */
+  from: z
+    .string()
+    .min(1)
+    .refine((s) => Number.isFinite(Date.parse(s)), {
+      message: "invalid ISO8601 timestamp",
+    }),
+  /** New lastEventAt — the incoming event's ts (ISO 8601). */
+  to: z
+    .string()
+    .min(1)
+    .refine((s) => Number.isFinite(Date.parse(s)), {
+      message: "invalid ISO8601 timestamp",
+    }),
+  /** Gap in milliseconds between `from` and `to`. */
+  gapMs: z.number().int().min(0),
+  reason: z.enum(["forward-gap-exceeded-threshold"]),
+});
+
+export type DaemonResyncPayload = z.infer<typeof DaemonResyncPayloadSchema>;
 
 // ---------------------------------------------------------------------------
 // Runtime validation

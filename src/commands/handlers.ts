@@ -864,8 +864,9 @@ export async function playCommand(
 /**
  * Implements `glyphling pet [note]`.
  *
- * Emits a `pet.fed` event (used as a generic interaction signal) with no XP
- * to record interaction without feeding. Resets neglect counter.
+ * Emits a `pet.petted` event (scritch/petting interaction) with no XP.
+ * Stamps `lastPettedAt` so pickScene() can trigger the petted scene window.
+ * Resets neglect counter and updates lastInteractionAt.
  */
 export async function petCommand(
   _args: string[],
@@ -883,15 +884,14 @@ export async function petCommand(
 
   const now = new Date().toISOString();
 
-  // pet (scritch) is a no-XP interaction — just resets neglect and updates lastInteractionAt.
-  // We use pet.fed with xpDelta=0 to record the interaction without XP.
-  const event = {
+  // pet (scritch) is a no-XP interaction — stamps lastPettedAt and resets neglect.
+  const event: GlyphlingEvent = {
     id: ulid(),
-    type: "pet.fed" as const,
+    type: "pet.petted",
     ts: now,
     petId: pet.id,
     source: "cli.pet",
-    payload: { scritch: true },
+    payload: {},
     prevHash: "",
   };
 
@@ -901,6 +901,7 @@ export async function petCommand(
     const existing = currentState.pets[idx]!;
     const updatedPet: Pet = {
       ...existing,
+      lastPettedAt: now,
       lastInteractionAt: now,
       accumulatedNeglectSeconds: 0,
     };
