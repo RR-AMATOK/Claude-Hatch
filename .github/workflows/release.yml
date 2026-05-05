@@ -148,6 +148,16 @@ jobs:
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           tag_name: v${{ steps.detect.outputs.version }}
+          # CRITICAL: pin the new tag to THIS workflow's SHA. softprops
+          # (and the underlying GH API) defaults target_commitish to the
+          # repository's default branch HEAD when omitted — meaning every
+          # tag created from any non-default branch (e.g. `beta`) silently
+          # lands on `main`'s tip instead. That bit us twice on the
+          # v1.0.1-beta.0 ship: the tag walked to whatever main happened
+          # to be at that moment (zod bump, then softprops bump). With
+          # github.sha explicit, the tag is pinned to the commit that
+          # triggered this run.
+          target_commitish: ${{ github.sha }}
           name: v${{ steps.detect.outputs.version }}
           body: ${{ steps.notes.outputs.body }}
           # A version string containing '-' is a pre-release (e.g. 1.0.0-beta.0).

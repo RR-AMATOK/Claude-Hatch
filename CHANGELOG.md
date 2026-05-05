@@ -4,6 +4,19 @@ All notable user-facing changes to glyphling are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.1-beta.1] — 2026-05-04
+
+Re-roll of `1.0.1-beta.0` after a release-infrastructure bug. The previous beta tag was created at the wrong commit (always `main`'s HEAD instead of the workflow's actual SHA), so `publish.yml` read `1.0.0` from the tag's checkout and 404'd. This version exists to validate the fix end-to-end.
+
+### Fixed
+- `release.yml` now passes `target_commitish: ${{ github.sha }}` to `softprops/action-gh-release`. Without it, the GitHub API defaults to the repository's default branch HEAD when creating a tag — meaning every tag created from a non-default branch (like `beta`) silently landed on `main`'s tip. The bug walked: first attempt landed on the zod-bump commit, second on the softprops-bump commit.
+
+### Validates
+- The `target_commitish` fix produces a tag at the correct commit (beta HEAD).
+- Downstream `publish.yml` dispatch reads the correct `package.json#version` and publishes to `@beta`.
+
+---
+
 ## [1.0.1-beta.0] — 2026-05-04
 
 First beta in the post-1.0.0 cycle. No user-facing changes from `1.0.0` — this version exists to validate the bump-driven release flow on the `beta` branch end-to-end: `release.yml` detects bump → tag + GitHub Release → `publish.yml` dispatched via `gh` CLI → npm publishes via OIDC trusted-publisher to `@beta`.
