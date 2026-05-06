@@ -152,6 +152,40 @@ export const SCENE_WINDOWS_MS: Partial<Record<SceneId, number>> =
   ) as Partial<Record<SceneId, number>>;
 
 // ---------------------------------------------------------------------------
+// Ambient scene set — used by useWander to decide whether to freeze motion
+//
+// Ambient scenes are the looping, non-event-triggered scenes where the pet is
+// simply existing in its current state. One-shot scenes (eat, play, levelup,
+// hatch, evolve, death) are NOT ambient — the pet should hold position during
+// those scenes so the frame content is not obscured by horizontal drift.
+// ---------------------------------------------------------------------------
+
+/**
+ * The set of SceneIds that are considered "ambient" (looping, non-event-driven).
+ * useWander pauses horizontal drift when the active scene is NOT in this set.
+ */
+export const AMBIENT_SCENES: ReadonlySet<SceneId> = new Set([
+  "idle-baseline",
+  "idle-chipper",
+  "idle-stoic",
+  "idle-curious",
+  "idle-grumpy",
+  "sick",
+  "sick-worse",
+  "sad",
+  "sleep",
+  "sleep-deep",
+] as const satisfies SceneId[]);
+
+/**
+ * Returns true when the given sceneId is an ambient (looping, non-event)
+ * scene. useWander uses this to gate horizontal drift.
+ */
+export function isAmbientScene(sceneId: SceneId): boolean {
+  return AMBIENT_SCENES.has(sceneId);
+}
+
+// ---------------------------------------------------------------------------
 // Scene selection from Pet state
 // ---------------------------------------------------------------------------
 
@@ -357,7 +391,7 @@ export function frameFromTime(
 // ---------------------------------------------------------------------------
 
 /**
- * Returns the current expanded Frame for the given pet.
+ * Returns the current expanded Frame and resolved SceneId for the given pet.
  * Drives a setInterval via useFrame(fps) per DEC-015.
  * Handles scene selection, one-shot time-derived frame indices, chains, and
  * reduced-motion opt-in.
@@ -370,9 +404,10 @@ export function frameFromTime(
  * existing React-tick path (useFrame + tickAnimation state machine).
  *
  * @param pet The pet whose state drives animation selection.
- * @returns   The current Frame to render (use frame.rows, frame.effectRow, etc.)
+ * @returns   { frame, sceneId } — the current Frame and the resolved SceneId.
+ *            sceneId is consumed by useWander to gate horizontal drift.
  */
-export function useAnimation(pet: Pet): Frame {
+export function useAnimation(pet: Pet): { frame: Frame; sceneId: SceneId } {
   const reducedMotion =
     typeof process !== "undefined" &&
     process.env["GLYPHLING_REDUCED_MOTION"] === "1";
@@ -466,10 +501,12 @@ export function useAnimation(pet: Pet): Frame {
   const frame = activeScene.frames[Math.min(frameIdx, activeScene.frames.length - 1)];
 
   // Defensive fallback (should never happen if assertions pass)
-  return frame ?? activeScene.frames[0] ?? {
+  const resolvedFrame: Frame = frame ?? activeScene.frames[0] ?? {
     rows: ["(o_o)", " ^v^ "],
     durationMs: 500,
   };
+
+  return { frame: resolvedFrame, sceneId: resolvedSceneId };
 }
 
 /**
