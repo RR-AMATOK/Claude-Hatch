@@ -583,10 +583,49 @@ Mapped to existing TODOs where possible.
 
 ## 12. Contracts for Developer Agents
 
+### 12.0 Pet wander — horizontal drift in the expanded TUI (TODO-045 Phase 1)
+
+The pet drifts left and right inside a 40-column arena inside `PetView`. Every 500 ms a `setInterval` advances a pure `stepWander` reducer: x moves one column in the current facing direction; when x would cross a boundary the position is clamped and `pausedAtEdge` is set, producing a 1-tick pause before the facing flips. During one-shot scenes (eat, play, level-up, hatch, evolve, death) the interval still fires but `stepWander` is not called and x is held — the pet slides only while the `isAmbientScene` predicate returns true for the active scene.
+
+**Position is session-local, not persisted.** Wander x lives entirely inside `useWander`'s `useState`; it is not on the `Pet` schema and is never written to `state.json`. The rationale mirrors the existing idle-scene frame-index pattern: position is cosmetic and has no semantic value between sessions. Persisting it would require a schema bump for a non-semantic field and complicate the statusline compact renderer (DEC-016), which has no concept of a wander arena.
+
+**`isAmbientScene` predicate** (`src/render/animation.ts`). Single source of truth for "is the pet drifting right now?" Returns true for the 10 ambient (looping, non-event-triggered) scenes:
+
+| Group | Scene IDs |
+|-------|-----------|
+| Idle variants | `idle-baseline`, `idle-chipper`, `idle-stoic`, `idle-curious`, `idle-grumpy` |
+| Illness / low energy | `sick`, `sick-worse`, `sad` |
+| Rest | `sleep`, `sleep-deep` |
+
+Sick, sad, and sleep scenes are **intentionally ambient** — the pet shuffles miserably during illness; the shuffle characterises the mood rather than interrupting it. One-shot scenes (`levelup-flash`, `eat-*`, `play-*`, `hatch-*`, `evolve-shimmer`, `death-fade`) are NOT ambient; wander is frozen during those scenes so their frame content is not obscured by horizontal drift.
+
+**DEC-015 conformance.**
+
+- `useWander` (`src/render/useWander.ts`) owns its own `setInterval` at `STEP_INTERVAL_MS`. It does NOT piggyback on `useFrame` (DEC-015 rule 1).
+- Scenes remain static data looked up at render time (DEC-015 rule 2).
+- `PetView` stays wrapped in `React.memo` (DEC-015 rule 3).
+- The animated `Box` has no `borderStyle` and a fixed `width={ARENA_COLS + 4}` — the arena width never changes so HudBar/LogPanel below do not reflow as x changes (DEC-015 rule 4 + relayout protection). The x offset is applied as leading whitespace prepended to each row string, not as `marginLeft`, to keep Yoga's layout tree stable.
+
+**`useAnimation` return-shape change.** Previously returned `Frame`; now returns `{ frame: Frame; sceneId: SceneId }`. The `sceneId` is consumed by `PetView` to feed `isAmbientScene(sceneId)` into `useWander`. No other callers exist today. The `pickCompactFrame` helper in the same module is unchanged — the compact statusline path (DEC-016) is unaffected.
+
+**Env-var contract.** `NO_MOTION=1` and `GLYPHLING_REDUCED_MOTION=1` are read once at mount time inside `useWander`'s `useEffect`. When either is set the hook returns a static `{ x: 0, facing: 1 }` and never starts the interval.
+
+**Constants** (`src/render/useWander.ts`):
+
+| Constant | Value | Meaning |
+|----------|-------|---------|
+| `ARENA_COLS` | `40` | Visible columns of the wander arena (exported). |
+| `STEP_INTERVAL_MS` | `500` | ms between wander steps (exported). |
+| `PET_WIDTH` | `20` | Approximate expanded-frame pet width in columns (internal); matches `docs/design/expanded-frames.md` §1.1. x is clamped to `[0, ARENA_COLS - PET_WIDTH]`. |
+
+**Phase 2 (TODO-046 — deferred).** A new `walk` scene with per-species limb-motion frames will replace the idle scene while the pet is drifting. This requires a new DEC because it expands the 22-scene contract and needs designer-authored frame art for all four species. Phase 1 (this feature) is position-only: the pet slides through idle frames today; it does not yet animate a walking gait.
+
+---
+
 ### 12.1 @web-developer (Ink renderer)
 
 - `<App />` receives a `StateStore` via React context; subscribes via `useSyncExternalStore`.
-- Pet view consumes `useAnimation(pet)` → current frame.
+- Pet view consumes `useAnimation(pet)` → `{ frame, sceneId }` (see §12.0 for the return-shape change).
 - REPL is an Ink component; command submission dispatches `commandHandlers[cmd](args, ctx)`.
 - No direct disk IO from components; all mutation via store actions.
 

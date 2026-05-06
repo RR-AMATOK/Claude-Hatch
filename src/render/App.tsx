@@ -37,7 +37,8 @@ import {
   type ColorMode,
 } from "./compact.js";
 import { LEVEL_CAP, levelFromCumXp, cumulativeXpForLevel } from "../xp/engine.js";
-import { useAnimation } from "./animation.js";
+import { useAnimation, isAmbientScene } from "./animation.js";
+import { useWander, ARENA_COLS } from "./useWander.js";
 import { glyphlingStore, bootStore, useGlyphlingStore } from "./useGlyphlingStore.js";
 import type { WatchValidationError } from "../state/store.js";
 import { useEventLog, formatRelativeTime, type LogEntry } from "./useEventLog.js";
@@ -145,6 +146,17 @@ interface PetViewProps {
  * Renders the animated pet using the useAnimation hook (DEC-015 pattern).
  * Wrapped in React.memo per DEC-015 rule #3 so only the pet cell repaints.
  * NO_MOTION=1 renders a static single frame with no eye-blink.
+ *
+ * TODO-045 (Phase 1): the pet drifts horizontally inside ARENA_COLS via
+ * useWander. Motion is frozen during one-shot scenes (eat, play, levelup,
+ * hatch, evolve, death). Position is session-only — never persisted.
+ *
+ * Layout contract (DEC-015 rule 4 + DEC-016):
+ *   - Parent Box width is fixed to ARENA_COLS + 4 so HudBar/LogPanel below
+ *     do not reflow when x changes.
+ *   - Horizontal offset is applied as leading whitespace prepended to each
+ *     row string — avoids Yoga relayout on every wander step (no marginLeft).
+ *   - No borderStyle on the animated content Box (DEC-015 rule 4).
  */
 const PetView = memo(function PetView({ pet, colorMode }: PetViewProps) {
   const noMotion = process.env["NO_MOTION"] === "1";
@@ -153,7 +165,16 @@ const PetView = memo(function PetView({ pet, colorMode }: PetViewProps) {
   // On NO_MOTION the scene's fps is > 0 but the visual stays static because
   // we render frame.rows without the blink overlay and the rows themselves
   // don't change (the scene is still selected correctly for the pet's state).
-  const frame = useAnimation(pet);
+  const { frame, sceneId } = useAnimation(pet);
+
+  // useWander drives its OWN setInterval (not useFrame — DEC-015 rule 1).
+  // Motion is frozen during non-ambient scenes so one-shot frames are not
+  // obscured by horizontal drift. NO_MOTION / GLYPHLING_REDUCED_MOTION guards
+  // are handled inside useWander itself.
+  const { x } = useWander({
+    paused: !isAmbientScene(sceneId),
+    arenaCols: ARENA_COLS,
+  });
 
   const level = levelFromCumXp(pet.xp);
   const stage = getLifeStage(level);
@@ -164,7 +185,7 @@ const PetView = memo(function PetView({ pet, colorMode }: PetViewProps) {
   if (frame.rows.length === 0) {
     // Defensive fallback — should never happen with valid scene data
     return (
-      <Box flexDirection="column" paddingLeft={2}>
+      <Box flexDirection="column" width={ARENA_COLS + 4} paddingLeft={2}>
         <Text dimColor>{"(o_o)"}</Text>
         <Text dimColor>{"^v^"}</Text>
       </Box>
@@ -179,13 +200,19 @@ const PetView = memo(function PetView({ pet, colorMode }: PetViewProps) {
     return row;
   });
 
+  // Prepend x spaces to each row for horizontal offset.
+  // String padding instead of marginLeft keeps Yoga's layout tree stable —
+  // the Box width never changes, only the text content inside each Text node.
+  const pad = " ".repeat(Math.max(0, x));
+  const paddedRows = rows.map((row) => pad + row);
+
   const accentColor = colorMode !== "none"
     ? (SPECIES_ACCENT_HEX[pet.eggType] ?? "#2a7fff")
     : undefined;
 
   return (
-    <Box flexDirection="column" paddingLeft={2}>
-      {rows.map((row, i) => (
+    <Box flexDirection="column" width={ARENA_COLS + 4} paddingLeft={2}>
+      {paddedRows.map((row, i) => (
         <Text key={i} {...colHex(accentColor)}>
           {row}
         </Text>
