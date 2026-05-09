@@ -461,7 +461,6 @@ describe("center-snap on one-shot scene", () => {
   // CENTER_X_STD = 20 is defined at module scope.
 
   const ONE_SHOT_KEYS: SceneKey[] = ["eating", "playing", "petted", "level-up", "death"];
-  const AMBIENT_KEYS: SceneKey[] = ["idle-baseline", "idle-stoic", "sleeping"];
   // Standard-tier circuit-adult silhouette starts with 1 space (e.g. " /[o-o]\").
   // The wander pad x is prepended, so total leading spaces in row 2 = centerX + 1.
   const SILHOUETTE_LEADING = 1; // inherent leading space in standard narrow silhouette strings
