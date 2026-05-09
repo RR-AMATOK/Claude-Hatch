@@ -209,17 +209,17 @@ describe("assembleWideOutput — standard tier", () => {
 });
 
 // ---------------------------------------------------------------------------
-// assembleWideOutput — wide tier (4 rows)
+// assembleWideOutput — wide tier (5 rows — revision 2, statusline-wander.md §2)
 // ---------------------------------------------------------------------------
 
 describe("assembleWideOutput — wide tier", () => {
   const pet = makePet({ level: 30, xp: cumulativeXpForLevel(30) });
   const cols = 160;
 
-  it("emits exactly 4 rows", () => {
+  it("emits exactly 5 rows", () => {
     const output = assembleWideOutput(pet, "wide", "idle-baseline", 0, "none", false, 1, 0, cols);
     const rows = output.split("\n");
-    expect(rows.length).toBe(4);
+    expect(rows.length).toBe(5);
   });
 
   it("no row visible-width exceeds cols", () => {
@@ -230,44 +230,44 @@ describe("assembleWideOutput — wide tier", () => {
   });
 
   it("rows 1-4 silhouette content occupies cols 0..<=17 (visibleWidth of art portion ≤18)", () => {
-    // For rows 1-3 the entire row is art (≤18 visible cols).
-    // Row 4 starts with art then HUD.
-    // We verify rows 1-3 are all ≤18 visible cols.
+    // Revision 2: rows 1-4 are pure silhouette art; row 5 is HUD-only.
+    // Verify rows 0-3 (0-indexed) are all ≤18 visible cols (art only, no HUD).
     const output = assembleWideOutput(pet, "wide", "idle-baseline", 0, "none", false, 1, 0, cols);
     const rows = output.split("\n");
-    // rows 0, 1, 2 are pure art
-    for (let r = 0; r < 3; r++) {
+    // rows 0, 1, 2, 3 are pure art (tick=0 so wander x=0, no leading pad)
+    for (let r = 0; r < 4; r++) {
       expect(visibleWidth(rows[r]!)).toBeLessThanOrEqual(18);
     }
   });
 
-  it("HUD content begins at col WIDE_HUD_START_COL on row 4", () => {
-    // Row 4 = silhouette row 3 + padding + HUD. We verify that content after
-    // the silhouette (padded to WIDE_HUD_START_COL) starts with pet name.
+  it("HUD is on row 5 (index 4) and is packed-tight at col 0 (revision 2)", () => {
+    // Revision 2: row 5 (index 4) is HUD-only, starting at col 0 (not WIDE_HUD_START_COL).
+    // The pet name appears in the HUD row; silhouette rows 1-4 carry no HUD content.
     const output = assembleWideOutput(pet, "wide", "idle-baseline", 0, "none", false, 1, 0, cols);
-    const row4 = output.split("\n")[3]!;
-    // The HUD left group starts at WIDE_HUD_START_COL.
-    // Strip trailing mood and whitespace to verify the name appears after col 15.
-    const stripped = row4; // no ANSI in 'none' mode
-    // Slice from WIDE_HUD_START_COL — should start the HUD content
-    const hudPortion = stripped.slice(WIDE_HUD_START_COL);
-    expect(hudPortion.trimStart()).toContain("Pixel");
+    const rows = output.split("\n");
+    const hudRow = rows[4]!;
+    // HUD row starts with the pet name at col 0
+    expect(hudRow.trimStart()).toContain("Pixel");
+    // HUD row does NOT appear in any silhouette row (rows 0-3 are pure art)
+    for (let r = 0; r < 4; r++) {
+      expect(rows[r]!).not.toContain("Pixel");
+    }
   });
 
-  it("packs mood tight after HUD on row 4 (no dead space)", () => {
-    // Pack-tight: row width is silhouette + padding + HUD + ' · ' + mood.
+  it("packs mood tight after HUD on row 5 (index 4) — no dead space", () => {
+    // Revision 2: HUD is row 5 (index 4). Pack-tight: HUD left + ' · ' + mood.
     // Width must fit within cols, and the row must end with the mood glyph.
     const output = assembleWideOutput(pet, "wide", "idle-baseline", 0, "none", false, 1, 0, cols);
-    const row4 = output.split("\n")[3]!;
-    expect(visibleWidth(row4)).toBeLessThanOrEqual(cols);
-    expect(row4).toMatch(/ \u00b7 :\|$/);
+    const row5 = output.split("\n")[4]!;
+    expect(visibleWidth(row5)).toBeLessThanOrEqual(cols);
+    expect(row5).toMatch(/ \u00b7 :\|$/);
   });
 
   it("HUD row contains pet name and level", () => {
     const output = assembleWideOutput(pet, "wide", "idle-baseline", 0, "none", false, 1, 0, cols);
-    const row4 = output.split("\n")[3]!;
-    expect(row4).toContain("Pixel");
-    expect(row4).toContain("Lv");
+    const row5 = output.split("\n")[4]!;
+    expect(row5).toContain("Pixel");
+    expect(row5).toContain("Lv");
   });
 
   it("works for sleeping scene — sleep particles on rows 2-3", () => {
@@ -279,40 +279,40 @@ describe("assembleWideOutput — wide tier", () => {
     });
     const output = assembleWideOutput(sleepPet, "wide", "sleeping", 0, "none", false, 1, 0, cols);
     const rows = output.split("\n");
-    expect(rows.length).toBe(4);
+    expect(rows.length).toBe(5);
     // Sleep particles should appear on row 2 (index 1) or row 3 (index 2)
     const row2 = rows[1]!;
     const row3 = rows[2]!;
     const hasSleepParticles = row2.includes("z") || row2.includes("Z") ||
                                row3.includes("z") || row3.includes("Z");
     expect(hasSleepParticles).toBe(true);
-    // Row 4 should not have sleep particles (it's the HUD row)
-    const row4 = rows[3]!;
-    expect(row4).not.toMatch(/\bz\b/);
+    // Row 5 (index 4) should not have sleep particles (it's the HUD row)
+    const hudRow = rows[4]!;
+    expect(hudRow).not.toMatch(/\bz\b/);
   });
 
-  it("works for death scene — 4 rows", () => {
+  it("works for death scene — 5 rows", () => {
     const deadPet = makePet({
       diedAt: new Date().toISOString(),
       tombstone: { diedAt: new Date().toISOString(), cause: "neglect", finalLevel: 5, finalXp: 500 },
     });
     const output = assembleWideOutput(deadPet, "wide", "death", 0, "none", false, 1, 0, cols);
     const rows = output.split("\n");
-    expect(rows.length).toBe(4);
+    expect(rows.length).toBe(5);
     expect(output).toContain("RIP");
   });
 
-  it("works for level-up scene — 4 rows", () => {
+  it("works for level-up scene — 5 rows", () => {
     const output = assembleWideOutput(pet, "wide", "level-up", 0, "none", false, 1, 0, cols);
     const rows = output.split("\n");
-    expect(rows.length).toBe(4);
+    expect(rows.length).toBe(5);
   });
 
-  it("row 4 fits within cols at 220-col width and ends with mood", () => {
+  it("row 5 (HUD) fits within cols at 220-col width and ends with mood", () => {
     const output = assembleWideOutput(pet, "wide", "idle-baseline", 0, "none", false, 1, 0, 220);
-    const row4 = output.split("\n")[3]!;
-    expect(visibleWidth(row4)).toBeLessThanOrEqual(220);
-    expect(row4).toMatch(/ \u00b7 :\|$/);
+    const row5 = output.split("\n")[4]!;
+    expect(visibleWidth(row5)).toBeLessThanOrEqual(220);
+    expect(row5).toMatch(/ \u00b7 :\|$/);
   });
 });
 
@@ -333,7 +333,7 @@ describe("assembleWideOutput — all species × stages × scenes", () => {
   for (const species of SPECIES) {
     for (const [stageName, level] of Object.entries(LEVELS)) {
       for (const scene of SCENES) {
-        it(`${species}/${stageName}/${scene} — 4 rows, all ≤${cols} cols`, () => {
+        it(`${species}/${stageName}/${scene} — 5 rows, all ≤${cols} cols`, () => {
           const pet = makePet({
             eggType: species,
             level,
@@ -347,12 +347,12 @@ describe("assembleWideOutput — all species × stages × scenes", () => {
           const tick = Math.floor(Date.now() / REFRESH_MS);
           const output = assembleWideOutput(pet, "wide", scene, tick, "none", false, 1, 0, cols);
           const rows = output.split("\n");
-          expect(rows.length).toBe(4);
+          expect(rows.length).toBe(5);
           for (const row of rows) {
             expect(visibleWidth(row)).toBeLessThanOrEqual(cols);
           }
-          // Row 4 should be non-empty (has HUD content)
-          expect(rows[3]!.length).toBeGreaterThan(0);
+          // Row 5 (index 4) should be non-empty (has HUD content)
+          expect(rows[4]!.length).toBeGreaterThan(0);
         });
       }
     }
@@ -385,9 +385,9 @@ describe("assembleWideOutput — reduced-motion determinism", () => {
       expect(repeated).toBe(outputs[i]);
     }
 
-    // With reduced motion env, all outputs should be well-formed (4 rows)
+    // With reduced motion env, all outputs should be well-formed (5 rows)
     for (const output of outputs) {
-      expect(output.split("\n").length).toBe(4);
+      expect(output.split("\n").length).toBe(5);
     }
   });
 
@@ -444,15 +444,15 @@ describe("assembleWideOutput — color modes", () => {
     expect(output).toContain("\x1b[38;2;");
   });
 
-  it("row count still 4 with color mode ansi256", () => {
+  it("row count still 5 with color mode ansi256", () => {
     const output = assembleWideOutput(pet, "wide", "idle-baseline", 0, "ansi256", false, 1, 0, cols);
-    expect(output.split("\n").length).toBe(4);
+    expect(output.split("\n").length).toBe(5);
   });
 
-  it("row 4 visibleWidth fits cols even with ANSI SGR in ansi256 mode", () => {
+  it("row 5 (HUD) visibleWidth fits cols even with ANSI SGR in ansi256 mode", () => {
     const output = assembleWideOutput(pet, "wide", "idle-baseline", 0, "ansi256", false, 1, 0, cols);
-    const row4 = output.split("\n")[3]!;
-    expect(visibleWidth(row4)).toBeLessThanOrEqual(cols);
+    const row5 = output.split("\n")[4]!;
+    expect(visibleWidth(row5)).toBeLessThanOrEqual(cols);
   });
 
   it("standard tier row 1 visibleWidth fits cols in ansi256 mode", () => {
