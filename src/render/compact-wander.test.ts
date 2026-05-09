@@ -577,17 +577,18 @@ describe("reduced motion — env-flag clamp", () => {
 
     // Under NO_MOTION=1, wander x is frozen at wideCenterX=19.
     // Each art row has an intrinsic leading space from the silhouette string.
-    // We verify that all 4 rows shift by exactly wideCenterX relative to their tick=0 baselines.
+    // We verify that all 4 rows shift by exactly wideCenterX relative to an x=0 baseline.
 
-    // Get tick=0 baselines (NO_MOTION=1 → x=19 at all ticks, so compare across ticks)
-    // Actually: under NO_MOTION, every tick gives x=centerX. Verify x is constant.
+    // Compute inherent leading spaces at x=0 (no wander offset).
+    const baselineRows = assembleWideOutput(pet, "wide", "idle-baseline", 0, "none", false, 1, 0, cols).split("\n");
+    const inherentPads = baselineRows.slice(0, 4).map(r => r.match(/^( *)/)?.[1]?.length ?? 0);
+
     const outputs: string[][] = [];
     for (const tick of [0, 5, 30]) {
       const rows = assembleWideOutput(pet, "wide", "idle-baseline", tick, "none", false, 1, 0, cols).split("\n");
       outputs.push(rows);
     }
-    // All three ticks must produce the SAME 4 art rows (same wander x = centerX regardless of tick)
-    // Check that art rows 0-3 are identical across all ticks (eye-blink may differ — compare leading pad only)
+    // Check that art rows 0-3 have stable leading pad across ticks and equal inherent + wideCenterX.
     const pads0 = outputs[0]!.slice(0, 4).map(r => r.match(/^( *)/)?.[1]?.length ?? 0);
     for (const rowSet of outputs.slice(1)) {
       const pads = rowSet.slice(0, 4).map(r => r.match(/^( *)/)?.[1]?.length ?? 0);
@@ -595,11 +596,11 @@ describe("reduced motion — env-flag clamp", () => {
         expect(pads[r], `NO_MOTION=1 wide tier row${r}: expected same pad across ticks`).toBe(pads0[r]);
       }
     }
-    // Verify the pad on each row equals wideCenterX + inherent art leading spaces for that row
-    // (inherent = row0:4, row1:3, row2:2, row3:4 for circuit-adult wide at tick=0 no wander)
-    // We don't hardcode the inherent spaces here; instead verify that the pad
-    // is the same across all ticks under NO_MOTION=1 (i.e., wander x is constant).
-    // This is sufficient to confirm the env flag is respected.
+    for (let r = 0; r < 4; r++) {
+      expect(pads0[r], `NO_MOTION=1 wide tier row${r}: expected center offset from x=0 baseline`).toBe(
+        inherentPads[r] + wideCenterX,
+      );
+    }
   });
 
   it("without any env flag, pet wanders freely (positions differ across ticks)", () => {
