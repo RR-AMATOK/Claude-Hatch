@@ -598,7 +598,7 @@ describe("reduced motion — env-flag clamp", () => {
     }
     for (let r = 0; r < 4; r++) {
       expect(pads0[r], `NO_MOTION=1 wide tier row${r}: expected center offset from x=0 baseline`).toBe(
-        inherentPads[r] + wideCenterX,
+        inherentPads[r]! + wideCenterX,
       );
     }
   });
