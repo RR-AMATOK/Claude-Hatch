@@ -567,7 +567,6 @@ describe("reduced motion — env-flag clamp", () => {
   });
 
   it("NO_MOTION=1: wide tier — all 4 art rows shift by wideCenterX from their tick=0 baseline", () => {
-    vi.stubEnv("NO_MOTION", "1");
     const pet = makePet();
     const cols = 160;
     const widePetWidth = CIRCUIT_ADULT_WIDE_WIDTH; // 12
@@ -579,9 +578,13 @@ describe("reduced motion — env-flag clamp", () => {
     // Each art row has an intrinsic leading space from the silhouette string.
     // We verify that all 4 rows shift by exactly wideCenterX relative to an x=0 baseline.
 
-    // Compute inherent leading spaces at x=0 (no wander offset).
+    // Compute inherent leading spaces at x=0 (no wander offset) — BEFORE stubbing NO_MOTION,
+    // otherwise the baseline would itself be center-snapped and the assertion below
+    // would compare (inherent+centerX) against (inherent+centerX)+centerX, which always fails.
     const baselineRows = assembleWideOutput(pet, "wide", "idle-baseline", 0, "none", false, 1, 0, cols).split("\n");
     const inherentPads = baselineRows.slice(0, 4).map(r => r.match(/^( *)/)?.[1]?.length ?? 0);
+
+    vi.stubEnv("NO_MOTION", "1");
 
     const outputs: string[][] = [];
     for (const tick of [0, 5, 30]) {
