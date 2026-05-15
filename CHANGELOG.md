@@ -4,6 +4,25 @@ All notable user-facing changes to glyphling are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] — 2026-05-15
+
+The pet now wanders. In both renderers.
+
+### Added
+
+- **Pet wander in the expanded Ink TUI (`npm run dev` / `glyphling`).** The pet drifts left and right inside a 40-column arena, hopping ~2 cells per second, bouncing off the edges with a brief pause to "notice the wall" before turning around. Drift halts during one-shot scenes (eating, playing, level-up, hatching, evolving, death) so animations don't slide mid-scene; continues through `sick` / `sad` / `sleep` as a "miserable shuffle" that reads as character. Honors `NO_MOTION=1` and `GLYPHLING_REDUCED_MOTION=1` (pet stays put). Position is per-session — never persisted to the pet schema.
+- **Pet wander in the Claude Code statusline.** The statusline pet now moves too, at standard tier (≥80 cols) and wide tier (≥140 cols). Cadence is 1 cell/sec at the 1 Hz statusline refresh — a discrete "tick-tock" stroll backed by the same gestalt apparent-motion threshold that makes mechanical clock second-hands feel alive. One-shot scenes (`eating | playing | petted | level-up | death`) and reduced-motion both center-snap the pet so it pauses center-stage to do the action.
+
+### Changed
+
+- **Wide-tier statusline now emits 5 rows instead of 4.** Silhouette rows 1–4 translate together as one composed creature; HUD glyphs (name · level · XP bar · mood) live on a dedicated row 5 that never moves with the pet. The previous 4-row layout shared the silhouette's "ground" row with the HUD, which would have created a visual disconnect once the silhouette began wandering. Narrow (1–2 rows) and standard (3 rows) tiers are unchanged.
+
+### Notes
+
+- Narrow tier (<80 cols) ships without wander by design — too cramped at 1 Hz refresh.
+- The wander cadence differs between renderers by regime necessity: 500 ms steps (≈2 Hz) in the TUI's React render loop, 1000 ms steps (1 Hz) in the statusline's one-shot subprocess. Both produce ~1 s of visible pause at edges; same user-perceived behavior, different mechanical encoding.
+- Under `refreshInterval ≥ 3` in your Claude Code `statusLine` config the wander degrades to perceived teleport. Keep `refreshInterval: 1` for smooth ambient drift.
+
 ## [1.0.0] — 2026-04-30
 
 First stable release. The pet you live with — fed by your real coding work, reacting to your slash commands, persisting across sessions.
