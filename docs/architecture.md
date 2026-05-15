@@ -622,14 +622,71 @@ Sick, sad, and sleep scenes are **intentionally ambient** — the pet shuffles m
 
 ---
 
-### 12.1 @web-developer (Ink renderer)
+### 12.1 Statusline pet wander — horizontal drift in the one-shot renderer (TODO-047)
+
+The statusline compact renderer applies a **time-derived horizontal wander offset** to the silhouette rows it emits. This is distinct from the TUI's `useWander` hook (§12.0) in mechanism, though both produce the same user-perceived bounce behaviour: ~1 s of visible pause at each edge before reversing direction.
+
+**Per-tier availability.**
+
+| Tier | Wander? | Silhouette rows that translate | HUD row |
+|------|---------|-------------------------------|---------|
+| narrow (`cols < 80`) | No | — | row 1 |
+| standard (`80 ≤ cols < 140`) | Yes | rows 2–3 | row 1 (pinned at col 0) |
+| wide (`cols ≥ 140`) | Yes | rows 1–4 | row 5 (pinned at col 0) |
+
+Wide tier emits **5 rows of stdout** (was 4 before TODO-047): the full 4-row silhouette wanders as a single composed unit; the HUD occupies a dedicated row 5 and is never offset. Narrow tier ships without wander — free width is available, but adding wander to the most-constrained surface spends design risk without proportionate benefit.
+
+**Why this is not `useWander`.** The TUI wander is a state machine running inside a React render loop: `setInterval` fires at `STEP_INTERVAL_MS = 500 ms`, a `stepWander` reducer advances `{x, facing, pausedAtEdge}` in `useState`, and two consecutive 500 ms ticks produce the 1-tick edge pause. None of that infrastructure exists in the statusline path — `glyphling statusline` is a one-shot subprocess (DEC-016) that exits after printing one frame. There is no `setInterval`, no in-memory continuity between ticks. Position is instead a **pure function of the clock**: `computeWanderX(tick, arenaCols, petWidth)` (`src/render/compact.ts`). Both regimes produce ~1 s of visible edge-hold, but one does it via a 2-tick state-machine pause and the other via a reserved cycle slot in the cadence formula. Do not unify them — the mechanisms are coupled to their respective rendering models.
+
+**The seam.** `tick = floor(Date.now() / REFRESH_MS)` is computed once in the `statusline.ts` entry point and threaded into `assembleWideOutput` and `assembleCompactOutput`. No `Date.now()` calls appear inside the assemblers, which preserves test determinism — callers inject an arbitrary tick in unit tests. The full set of inputs to the wander computation is `(tick, cols, tier, species, stage, sceneKey)`, all of which are already present at the assembler call site.
+
+**Cadence math.** `WANDER_ARENA_CAP = 50` (`compact.ts:WANDER_ARENA_CAP`). Effective arena: `arenaCols = min(WANDER_ARENA_CAP, cols)`. Pet displacement per tick: 1 column.
+
+```
+maxX          = arenaCols - PET_WIDTH          // rightmost left edge before bounce
+stepsPerCycle = 2 * maxX + 2                   // +2 reserves 1-tick hold per edge
+step          = tick % stepsPerCycle
+
+x = step ≤ maxX          ? step
+  : step === maxX + 1     ? maxX               // right-edge pause
+  : step ≤ 2 * maxX + 1  ? 2 * maxX + 1 - step
+  :                         0                  // left-edge pause
+```
+
+See `docs/design/statusline-wander.md §3` for the full derivation and cycle-time worked examples. At `arenaCols = 50` and `PET_WIDTH = 7` a full bounce cycle is 88 seconds — ambient enough not to pull focus.
+
+**`isOneShotScene` predicate.** Lives locally in `compact.ts` over the 10-key `SceneKey` namespace. The one-shot set is:
+
+```ts
+ONE_SHOT_SCENES = new Set(["eating", "playing", "petted", "level-up", "death"])
+```
+
+Do **not** import `isAmbientScene` from `src/render/animation.ts` — that predicate operates over the 22-key `SceneId` atlas used by the TUI, a different namespace. A cross-consistency unit test asserts that every key in `ONE_SHOT_SCENES` maps to a `SceneId` that `isAmbientScene` considers non-ambient (and vice-versa for the remaining compact keys), confirming semantic parity without collapsing the two predicates into one.
+
+**Center-snap rule.** When `isOneShotScene(sceneKey)` is true, OR when `isReducedMotion()` returns true (`NO_MOTION=1` / `GLYPHLING_REDUCED_MOTION=1`):
+
+```
+x = floor(maxX / 2)    // i.e. floor((arenaCols - PET_WIDTH) / 2)
+```
+
+The pet pauses center-stage for the duration of the scene window. For `death` this is permanent — `pet.diedAt != null` ensures the one-shot predicate always fires and the pet never wanders again. Under reduced-motion the pet sits at centre for every ambient tick as well; scene cycling (frame index) continues normally.
+
+**`COMPACT_PET_WIDTH` table.** Computed at module load from the `SILHOUETTES` data by taking `Math.max(...rows.map(visibleWidth))` per `(tier, species, stage)`, frozen into `COMPACT_PET_WIDTH`, and asserted at startup via `assertCompactPetWidths()` — the sibling pattern to `assertWideFrameDimensions()`. Runtime values are the source of truth; `docs/design/statusline-wander.md §4` lists approximate values for reference only.
+
+**DEC-016 amendment.** The wide-tier 4→5 row change is recorded in the DEC-016 TODO-047 amendment paragraph in `DECISIONS.md`. The `CompactFrame.rows.length ≤ 3` invariant (§12.4 / §14) is **unchanged** — it constrains scene frame *data*, not the assembled stdout that the wide assembler composes. Wide-tier silhouettes (`SILHOUETTES[species][stage].wide`) remain exactly 4 rows of art; the fifth row is the HUD, synthesised by `assembleWideOutput`, not stored in any `CompactFrame`.
+
+**Authoritative spec:** `docs/design/statusline-wander.md`.
+
+---
+
+### 12.2 @web-developer (Ink renderer)
 
 - `<App />` receives a `StateStore` via React context; subscribes via `useSyncExternalStore`.
 - Pet view consumes `useAnimation(pet)` → `{ frame, sceneId }` (see §12.0 for the return-shape change).
 - REPL is an Ink component; command submission dispatches `commandHandlers[cmd](args, ctx)`.
 - No direct disk IO from components; all mutation via store actions.
 
-### 12.2 @backend-developer (state, XP, lifecycle, signals, adoption)
+### 12.3 @backend-developer (state, XP, lifecycle, signals, adoption)
 
 - All disk writes go through `StatePersistence.writeState`.
 - All state changes go through `StateStore.dispatch(action)`.
@@ -637,7 +694,7 @@ Sick, sad, and sleep scenes are **intentionally ambient** — the pet shuffles m
 - Signal collectors call `EventBus.emit`; they never touch StateStore directly.
 - Lockfile usage: `withLock(async () => { … })` — no bare acquire/release in product code.
 
-### 12.3 @designer + @web-developer (animations)
+### 12.4 @designer + @web-developer (animations)
 
 - `Scene` type in `animations/types.ts`: `{ id, frames: Frame[], fps, loop: boolean, compact: CompactFrame[] }`.
 - Frames (expanded view) are strings (possibly multi-line) + a palette descriptor (optional) — kept simple for v1.
@@ -648,11 +705,11 @@ Sick, sad, and sleep scenes are **intentionally ambient** — the pet shuffles m
   - **Relationship to `frames`.** `frames` drives the Ink expanded view at 10–30 fps (DEC-015). `compact` drives the statusline at ~1 Hz. The two are semantically linked (same scene, same pet mood) but rendered by different modules and sized independently.
 - One scene per required state: idle-1..idle-5, eat, sleep, play, sick, happy, sad, evolving, hatching, death, level-up-flash. That's 15 minimum; 20 is the floor — @designer adds variants. Every scene must ship BOTH `frames` and `compact`; a scene with an empty `compact[]` fails build.
 
-### 12.4 @database-engineer
+### 12.5 @database-engineer
 
 Not applicable in v1 — our "database" is `state.json` + `events.jsonl`. If we ever migrate to SQLite (unlikely), escalate.
 
-### 12.5 @researcher
+### 12.6 @researcher
 
 - TODO-002: npm name availability (already scoped).
 - **New ask — TODO-002-adj** (propose new TODO): evaluate Claude Code hook availability, lockfile libraries (`proper-lockfile` vs `lockfile` vs `@npmcli/fs`), terminal→GIF libraries (`asciinema` + `agg`, `terminalizer`, `ttystudio`), Ink animation/frame-rate patterns.
@@ -808,7 +865,7 @@ The "Proposed" draft of DEC-016 below is kept for historical context only; its r
   - Remains the canonical place for anything interactive or high-fidelity.
 
   **(c) Shared contract changes.**
-  - `Scene` (§12.3) gains a `compact: CompactFrame[]` field. Dimensions ≤3 rows × ≤60 cols, ANSI, 256-color safe (truecolor optional). Every scene ships both `frames` and `compact`; empty `compact[]` fails build.
+  - `Scene` (§12.4) gains a `compact: CompactFrame[]` field. Dimensions ≤3 rows × ≤60 cols, ANSI, 256-color safe (truecolor optional). Every scene ships both `frames` and `compact`; empty `compact[]` fails build.
   - Two new modules (§2.2): `render/statusline.ts` (the one-shot renderer) and `render/compact.ts` (CompactVocab — types, ANSI helpers, dispatch table, build-time size assertions).
   - No state-schema change. All data the compact renderer needs is already on `StateFileV1` (§3.2 note). A future `globals.statuslineEnabled?: boolean` toggle is deferred to a follow-up DEC.
 
@@ -829,7 +886,7 @@ The "Proposed" draft of DEC-016 below is kept for historical context only; its r
   - DEC-001, DEC-002, DEC-010, DEC-012, DEC-013, DEC-015 — unchanged. Reaffirmed: `state.json` as safe-to-read view is precisely the property that enables a lock-free statusline reader.
   - DEC-005 / DEC-014 (GIF export) — unchanged. GIF source is the Ink expanded view; compact frames are not a capture target.
   - §3.1 schema — no fields added. §3.2 gains a DEC-016 note documenting which fields the statusline reads.
-  - §12.3 animation contract — extended with `compact: CompactFrame[]`.
+  - §12.4 animation contract — extended with `compact: CompactFrame[]`.
   - §13 risks — new risk #6 (subprocess budget).
   - TODO-007 (animation library) — scope grows to include compact frames. Split into TODO-007 (expanded frames, as-is) + new TODO-016 (compact vocabulary).
 

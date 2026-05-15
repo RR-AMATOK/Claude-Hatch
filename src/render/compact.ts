@@ -9,11 +9,15 @@
  *   - ANSI SGR helpers (256-color default, ANSI-16 fallback, truecolor opt-in)
  *   - SCENES / SILHOUETTES data
  *   - pickCompactFrame(pet, scene, tick) — pure dispatch function
+ *   - computeWanderX(tick, arenaCols, petWidth) — pure wander offset helper
  *   - assertFrameDimensions() — build-time assertion (≤3 rows × ≤60 cols)
  *   - Tier / classifyTier() — responsive breakpoint classification
  *   - WIDE_HUD_START_COL / WIDE_SILHOUETTE_MAX_COLS — wide-tier layout constants
- *   - assembleWideOutput() — standard/wide tier assembler
- *   - assertWideFrameDimensions() — build-time assertion for wide silhouettes
+ *   - WANDER_ARENA_CAP — wander arena column cap
+ *   - COMPACT_PET_WIDTH — per-(tier, species, stage) pet width table
+ *   - ONE_SHOT_SCENES / isOneShotScene() — centre-snap scene predicate
+ *   - assembleWideOutput() — standard (3-row) / wide (5-row) tier assembler
+ *   - assertWideFrameDimensions() / assertCompactPetWidths() — build-time assertions
  */
 
 import type { Pet, EggType } from "../state/schema.js";
@@ -92,6 +96,13 @@ export function classifyTier(cols: number | undefined): Tier {
  * recomputation (statusline-wide.md §4.3, §5 handoff §4).
  */
 export const WIDE_HUD_START_COL = 15;
+
+/**
+ * Maximum wander arena width in columns (user constraint #6, §3).
+ * Caps the bounce band so full cycles never exceed ~88 ticks at the typical
+ * pet width, keeping motion clock-like rather than attention-grabbing.
+ */
+export const WANDER_ARENA_CAP = 50;
 
 /**
  * Maximum visible columns a wide silhouette row may occupy.
@@ -294,6 +305,42 @@ export type SceneKey =
   | "sick"
   | "level-up"
   | "death";
+
+/**
+ * One-shot scenes in the compact SceneKey namespace (§6, statusline-wander.md).
+ * During these scenes the pet snaps to the arena centre column and holds.
+ *
+ * Do NOT conflate with the 22-key TUI SceneId namespace in animation.ts;
+ * that module's `isAmbientScene` operates over a different key set.
+ */
+export const ONE_SHOT_SCENES: ReadonlySet<SceneKey> = new Set<SceneKey>([
+  "eating",
+  "playing",
+  "petted",
+  "level-up",
+  "death",
+]);
+
+/**
+ * Returns true when the given SceneKey requires centre-snap wander behaviour
+ * (eating / playing / petted / level-up / death). Locally defined over the
+ * compact 10-key namespace — never imported from animation.ts.
+ */
+export function isOneShotScene(sceneKey: SceneKey): boolean {
+  return ONE_SHOT_SCENES.has(sceneKey);
+}
+
+/**
+ * Returns true when the user has opted out of all motion via environment
+ * variables. Reads process.env once per call — safe because assemblers are
+ * called once per one-shot subprocess tick.
+ */
+function isReducedMotion(): boolean {
+  return (
+    process.env["NO_MOTION"] === "1" ||
+    process.env["GLYPHLING_REDUCED_MOTION"] === "1"
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Life stage helper
@@ -753,6 +800,46 @@ export function pickScene(pet: Pet, nowMs: number): SceneKey {
 }
 
 // ---------------------------------------------------------------------------
+// computeWanderX — pure wander offset helper (statusline-wander.md §3)
+// ---------------------------------------------------------------------------
+
+/**
+ * Compute the horizontal wander offset (left-edge column) for the pet
+ * given a tick counter, arena width, and pet width.
+ *
+ * Algorithm: deterministic ping-pong with 1-tick edge pause at each boundary
+ * (statusline-wander.md §3, §3.0).  step = tick % stepsPerCycle.
+ *
+ *   stepsPerCycle = 2 * maxX + 2  (reserves 1 tick hold at each edge)
+ *   step ≤ maxX              → x = step             (moving right)
+ *   step === maxX + 1        → x = maxX             (pause at right edge)
+ *   step ≤ 2 * maxX + 1     → x = 2*maxX+1 - step  (moving left)
+ *   else (step === 2*maxX+2) → x = 0                (pause at left edge)
+ *
+ * Pure and deterministic: same (tick, arenaCols, petWidth) always returns
+ * the same x.  No Date.now() calls — tick is supplied by the entry point.
+ *
+ * @param tick       floor(Date.now() / 1000) supplied by the assembler.
+ * @param arenaCols  Effective arena width after cap: min(WANDER_ARENA_CAP, cols - reserve).
+ * @param petWidth   Visible width of the pet silhouette on its widest row.
+ * @returns          Left-edge column offset x ∈ [0, maxX].
+ */
+export function computeWanderX(
+  tick: number,
+  arenaCols: number,
+  petWidth: number
+): number {
+  const maxX = Math.max(0, arenaCols - petWidth);
+  if (maxX === 0) return 0;
+  const stepsPerCycle = 2 * maxX + 2;
+  const step = tick % stepsPerCycle;
+  if (step <= maxX) return step;
+  if (step === maxX + 1) return maxX;
+  if (step <= 2 * maxX + 1) return 2 * maxX + 1 - step;
+  return 0; // step === 2 * maxX + 2 — pause at left edge
+}
+
+// ---------------------------------------------------------------------------
 // pickCompactFrame — pure dispatch function (DEC-016)
 // ---------------------------------------------------------------------------
 
@@ -1072,6 +1159,67 @@ export function assertWideFrameDimensions(): void {
 assertWideFrameDimensions();
 
 // ---------------------------------------------------------------------------
+// COMPACT_PET_WIDTH — visible width lookup table (statusline-wander.md §4)
+// ---------------------------------------------------------------------------
+
+/**
+ * Per-(tier, species, stage) visible width of the widest silhouette art row.
+ *
+ * Computed once at module load from SILHOUETTES via Math.max(...rows.map(visibleWidth)).
+ * Frozen to prevent accidental mutation. The "narrow" tier entry is present for
+ * completeness but wander is not applied at narrow tier (§2).
+ *
+ * Used by computeWanderX to derive petWidth without any per-tick recomputation.
+ */
+function buildCompactPetWidth(): Record<Tier, Record<EggType, Record<LifeStage, number>>> {
+  const tiers = ["narrow", "standard", "wide"] as Tier[];
+  const stages = ["hatchling", "juvenile", "adult"] as LifeStage[];
+  const species = Object.keys(SILHOUETTES) as EggType[];
+
+  const result = {} as Record<Tier, Record<EggType, Record<LifeStage, number>>>;
+  for (const tier of tiers) {
+    result[tier] = {} as Record<EggType, Record<LifeStage, number>>;
+    for (const sp of species) {
+      result[tier][sp] = {} as Record<LifeStage, number>;
+      for (const stage of stages) {
+        const entry = SILHOUETTES[sp][stage];
+        const rows: readonly string[] = tier === "wide" ? entry.wide : entry.narrow;
+        result[tier][sp][stage] = Math.max(...rows.map(visibleWidth));
+      }
+    }
+  }
+  return result;
+}
+
+export const COMPACT_PET_WIDTH: Readonly<
+  Record<Tier, Readonly<Record<EggType, Readonly<Record<LifeStage, number>>>>>
+> = Object.freeze(buildCompactPetWidth()) as Readonly<
+  Record<Tier, Readonly<Record<EggType, Readonly<Record<LifeStage, number>>>>>
+>;
+
+/**
+ * Assert that COMPACT_PET_WIDTH is fully populated and all values are positive
+ * integers. Sibling to assertWideFrameDimensions() — runs at module load.
+ */
+export function assertCompactPetWidths(): void {
+  for (const tier of ["narrow", "standard", "wide"] as Tier[]) {
+    for (const species of Object.keys(SILHOUETTES) as EggType[]) {
+      for (const stage of ["hatchling", "juvenile", "adult"] as LifeStage[]) {
+        const w = COMPACT_PET_WIDTH[tier][species][stage];
+        if (typeof w !== "number" || w <= 0 || !Number.isInteger(w)) {
+          throw new Error(
+            `COMPACT_PET_WIDTH[${tier}][${species}][${stage}] is invalid: ${w}`
+          );
+        }
+      }
+    }
+  }
+}
+
+// Run alongside wide-frame assertions at module load.
+assertCompactPetWidths();
+
+// ---------------------------------------------------------------------------
 // HUD left-group rendering (standard/wide tiers — mood is right-anchored)
 // ---------------------------------------------------------------------------
 
@@ -1153,23 +1301,27 @@ function renderHudLeftGroup(
 }
 
 // ---------------------------------------------------------------------------
-// Wide/standard tier assembly (statusline-wide.md §4.2, §4.3)
+// Wide/standard tier assembly (statusline-wide.md §4.2, §4.3; wander per statusline-wander.md §3)
 // ---------------------------------------------------------------------------
 
 /**
- * Assemble standard (3-row) or wide (4-row) output.
+ * Assemble standard (3-row) or wide (5-row) output.
  *
  * Standard tier (80 ≤ cols < 140) — 3 rows:
  *   Row 1: HUD left group + " · " + mood glyph (pack-tight, no fill padding)
- *   Row 2: narrow silhouette row 1
- *   Row 3: narrow silhouette row 2
+ *   Row 2: narrow silhouette row 1 — offset by wander pad (statusline-wander.md §5.1)
+ *   Row 3: narrow silhouette row 2 — offset by wander pad
  *
- * Wide tier (cols ≥ 140) — 4 rows:
- *   Row 1: wide silhouette row 0 (art only)
- *   Row 2: wide silhouette row 1 (art only)
- *   Row 3: wide silhouette row 2 (art only)
- *   Row 4: wide silhouette row 3 + padding to WIDE_HUD_START_COL + HUD left group
- *           + " · " + mood glyph (pack-tight, no trailing fill)
+ * Wide tier (cols >= 140) — 5 rows (revision 2, statusline-wander.md §2, §5.2):
+ *   Row 1: wide silhouette row 0 — offset by wander pad
+ *   Row 2: wide silhouette row 1 — offset by wander pad
+ *   Row 3: wide silhouette row 2 — offset by wander pad
+ *   Row 4: wide silhouette row 3 — offset by wander pad
+ *   Row 5: HUD only (packed-tight at col 0, never offset)
+ *
+ * Wander (§3): deterministic ping-pong derived from `tick`. Centre-snap fires
+ * during one-shot scenes (§6) and when reduced-motion env vars are set (§7).
+ * Sleep particles (§9) are appended AFTER the wander pad so they track the pet.
  *
  * For death/level-up scenes the scene frame content replaces the silhouette rows
  * (padded with blank rows if the frame has fewer rows than the tier requires).
@@ -1186,7 +1338,7 @@ export function assembleWideOutput(
   richGlyphs: boolean,
   totalPets: number,
   petIndex: number,
-  _cols: number
+  cols: number
 ): string {
   const nowMs = Date.now();
   const mood = deriveMood(pet, nowMs);
@@ -1251,12 +1403,26 @@ export function assembleWideOutput(
       }
     }
 
-    return hudRow + "\n" + row2 + "\n" + row3;
+    // Wander pad — rows 2-3 only (HUD row 1 is never offset).
+    // arenaCols = min(WANDER_ARENA_CAP, cols) per statusline-wander.md §5.1.
+    // Centre-snap on one-shot scenes (§6) and reduced-motion (§7).
+    const stage = getLifeStage(deriveLevel(pet.xp));
+    const petWidth = COMPACT_PET_WIDTH["standard"][pet.eggType][stage];
+    const arenaCols = Math.min(WANDER_ARENA_CAP, cols);
+    const maxX = Math.max(0, arenaCols - petWidth);
+    const centerX = Math.floor(maxX / 2);
+    const x =
+      isOneShotScene(sceneKey) || isReducedMotion()
+        ? centerX
+        : computeWanderX(tick, arenaCols, petWidth);
+    const pad = " ".repeat(x);
+
+    return hudRow + "\n" + pad + row2 + "\n" + pad + row3;
   }
 
-  // Wide tier — 4 rows
-  // Rows 1-3: wide silhouette rows 0-2 (art only)
-  // Row 4: wide silhouette row 3 + HUD content
+  // Wide tier — 5 rows (revision 2, statusline-wander.md §5.2)
+  // Rows 1-4: wide silhouette rows 0-3, each offset by wander pad.
+  // Row 5: HUD only — packed-tight at col 0, never offset.
   let wideRows: readonly [string, string, string, string];
 
   if (sceneKey === "death" || sceneKey === "level-up") {
@@ -1280,9 +1446,11 @@ export function assembleWideOutput(
     ];
   }
 
-  // Handle sleep particles for sleeping scene on wide tier.
-  // Spec §3.3: z at col 15 row 2, Z at col 17 row 3 (1-indexed → array idx 1, 2).
-  // We overlay them onto wideRows[1] and wideRows[2] if it's the sleeping scene.
+  // Order of operations (statusline-wander.md implementation outline §4):
+  //   scene → frame → eye-blink overlay → sleep-particle suffix → wander pad → assemble
+
+  // Sleep particles: append to art rows BEFORE wander pad so z/Z track the pet (§9).
+  // Alternate z/Z based on tick (2-frame sleep cycle).
   let artRow0 = wideRows[0];
   let artRow1 = wideRows[1];
   let artRow2 = wideRows[2];
@@ -1293,19 +1461,38 @@ export function assembleWideOutput(
     const sleepFrameIdx = tick % 2;
     const zSmall = sleepFrameIdx === 0 ? " z" : " Z";
     const zBig = sleepFrameIdx === 0 ? "   Z" : "   z";
-    // Append sleep particles to art rows 1 and 2 (indices 1 and 2)
-    // Only if they don't already end at or beyond col 13 (safe to append)
+    // Append sleep particles to art rows 1 and 2 (indices 1 and 2).
+    // Particles are appended to the art row string; the wander pad is then
+    // prepended to the whole string, so z/Z end up at (x + artWidth + particleOffset).
     artRow1 = wideRows[1] + zSmall;
     artRow2 = wideRows[2] + zBig;
   }
 
-  // Row 4: wide silhouette row 3 + space to WIDE_HUD_START_COL + HUD
-  const silRow3Width = visibleWidth(artRow3);
-  const padToHud = Math.max(0, WIDE_HUD_START_COL - silRow3Width);
-  const row4Left = artRow3 + " ".repeat(padToHud) + hudLeft;
-  const row4 = buildHudRow(row4Left);
+  // Wander pad — all four silhouette rows translate as a unit (§5.2).
+  // arenaCols = min(WANDER_ARENA_CAP, cols) — HUD is on its own row 5 so no
+  // HUD column reserve is subtracted from the arena.
+  // Centre-snap on one-shot scenes (§6) and reduced-motion (§7).
+  const wideStage = getLifeStage(deriveLevel(pet.xp));
+  const widePetWidth = COMPACT_PET_WIDTH["wide"][pet.eggType][wideStage];
+  const wideArenaCols = Math.min(WANDER_ARENA_CAP, cols);
+  const wideMaxX = Math.max(0, wideArenaCols - widePetWidth);
+  const wideCenterX = Math.floor(wideMaxX / 2);
+  const wideX =
+    isOneShotScene(sceneKey) || isReducedMotion()
+      ? wideCenterX
+      : computeWanderX(tick, wideArenaCols, widePetWidth);
+  const widePad = " ".repeat(wideX);
 
-  return artRow0 + "\n" + artRow1 + "\n" + artRow2 + "\n" + row4;
+  // Row 5 — HUD only; packed-tight at col 0; never offset by wander.
+  const row5 = buildHudRow(hudLeft);
+
+  return (
+    widePad + artRow0 + "\n" +
+    widePad + artRow1 + "\n" +
+    widePad + artRow2 + "\n" +
+    widePad + artRow3 + "\n" +
+    row5
+  );
 }
 
 // ---------------------------------------------------------------------------
