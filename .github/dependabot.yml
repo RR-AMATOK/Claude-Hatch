@@ -11,6 +11,21 @@ updates:
     commit-message:
       prefix: "chore(deps)"
       include: scope
+    # Pin the Ink + React stack to current majors.
+    # Ink 7+ requires React 19 as a peerOptional; this is a coordinated
+    # migration (DEC-015 rendering rules + useFrame/useApp/useInput surface
+    # area) tracked as TODO-048. Lift these ignores when that branch ships.
+    ignore:
+      - dependency-name: "ink"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "react"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "react-dom"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "@types/react"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "@types/react-dom"
+        update-types: ["version-update:semver-major"]
     groups:
       # Single weekly PR for type-only dev-dep bumps — low signal, high volume.
       types:
