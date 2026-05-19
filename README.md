@@ -58,6 +58,8 @@ Drop this into `.claude/settings.json` and your pet moves into the Claude Code s
 
 The compact renderer reads state in under 30 milliseconds. No subprocess you'll ever feel.
 
+Your pet **wanders** in the statusline at standard and wide terminal widths — one cell per second, bouncing at the edges. The expanded TUI shows the same wander at 2 Hz inside its own 40-column arena. Pet pauses center-stage during eating, playing, level-ups, and other one-shot moments so the animation reads as a deliberate beat. `NO_MOTION=1` or `GLYPHLING_REDUCED_MOTION=1` pin the pet still.
+
 ---
 
 ## Slash commands in Claude Code
